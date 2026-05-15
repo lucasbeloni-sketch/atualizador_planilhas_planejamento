@@ -101,6 +101,32 @@ def limpar_intervalos(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
     executar_com_retry(lambda: worksheet.batch_clear(ranges))
 
 
+def limpar_coluna_preservando_validacao(
+    worksheet: gspread.Worksheet,
+    col: int,
+    start_row: int = 6,
+) -> None:
+    """
+    Limpa somente os valores da coluna, sem remover lista suspensa,
+    validação de dados ou formatação.
+    """
+    last_row = ultima_linha_preenchida_por_coluna(worksheet, col)
+
+    if last_row < start_row:
+        return
+
+    qtd_linhas = last_row - start_row + 1
+    valores_vazios = [[""] for _ in range(qtd_linhas)]
+
+    escrever_matriz(
+        worksheet=worksheet,
+        start_row=start_row,
+        start_col=col,
+        values=valores_vazios,
+        raw=True,
+    )
+
+
 def escrever_celula(worksheet: gspread.Worksheet, a1: str, valor, raw: bool = True) -> None:
     value_input_option = "RAW" if raw else "USER_ENTERED"
 
@@ -324,7 +350,6 @@ def atualizar_cart_validador(
 
     limpar_intervalos(aba_cart_validador_dest, ["A1:B"])
 
-    # G = coluna 7 | AS = coluna 45
     ultima_linha_as = ultima_linha_preenchida_por_coluna(aba_validacoes_orig, 45)
 
     if ultima_linha_as == 0:
@@ -511,7 +536,11 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
 
     escrever_celula(aba_entrada, "F2", "Etapa 3 de 3")
 
-    limpar_intervalos(aba_entrada, ["B6:AD"])
+    # Limpa a coluna B somente nos valores, preservando lista suspensa/validação
+    limpar_coluna_preservando_validacao(aba_entrada, col=2, start_row=6)
+
+    # Limpa normalmente as demais colunas
+    limpar_intervalos(aba_entrada, ["C6:AD"])
 
     last_carteira = ultima_linha_preenchida_por_coluna(aba_carteira, 3)
 
