@@ -339,22 +339,33 @@ def valor_coluna(row: list, col_planilha: int, col_inicial_range: int = 2):
     return row[idx]
 
 
-def buscar_ids_planilhas(ss_lista: gspread.Spreadsheet) -> list[str]:
+def buscar_planilhas(ss_lista: gspread.Spreadsheet) -> list[dict[str, str]]:
     """
-    Busca os IDs das planilhas na aba BD_Planilhas, coluna C, a partir da linha 3.
+    Busca os nomes e IDs das planilhas na aba BD_Planilhas.
+    Nome: coluna B, a partir da linha 3.
+    ID: coluna C, a partir da linha 3.
     Remove vazios e IDs duplicados.
     """
     aba_lista = abrir_aba(ss_lista, ABA_LISTA_PLANILHAS)
-    valores_coluna_c = ler_coluna(aba_lista, 3)
 
-    ids = []
+    ultima_linha = ultima_linha_preenchida_por_coluna(aba_lista, 3)
+
+    if ultima_linha < 3:
+        return []
+
+    valores = ler_range(
+        aba_lista,
+        f"B3:C{ultima_linha}",
+        ultima_linha - 2,
+        2,
+    )
+
+    planilhas = []
     ids_vistos = set()
 
-    for linha, valor in enumerate(valores_coluna_c, start=1):
-        if linha < 3:
-            continue
-
-        id_planilha = as_text(valor).strip()
+    for row in valores:
+        nome_planilha = as_text(row[0]).strip() if len(row) > 0 else ""
+        id_planilha = as_text(row[1]).strip() if len(row) > 1 else ""
 
         if not id_planilha:
             continue
@@ -362,10 +373,19 @@ def buscar_ids_planilhas(ss_lista: gspread.Spreadsheet) -> list[str]:
         if id_planilha in ids_vistos:
             continue
 
-        ids.append(id_planilha)
+        if not nome_planilha:
+            nome_planilha = "Sem nome informado"
+
+        planilhas.append(
+            {
+                "nome": nome_planilha,
+                "id": id_planilha,
+            }
+        )
+
         ids_vistos.add(id_planilha)
 
-    return ids
+    return planilhas
 
 
 # =========================================================
@@ -700,12 +720,14 @@ def executar_bloco1_para_planilha(
     client: gspread.Client,
     ss_orig: gspread.Spreadsheet,
     dest_spreadsheet_id: str,
+    nome_planilha: str,
     indice: int,
     total: int,
 ) -> None:
     print("")
     print("=" * 80)
     print(f"Executando planilha {indice}/{total}")
+    print(f"Nome destino: {nome_planilha}")
     print(f"ID destino: {dest_spreadsheet_id}")
     print("=" * 80)
 
@@ -715,7 +737,7 @@ def executar_bloco1_para_planilha(
     atualizar_carteira(ss_dest, ss_orig)
     atualizar_entrada_nova(ss_dest)
 
-    print(f"[OK] Planilha concluída: {dest_spreadsheet_id}")
+    print(f"[OK] Planilha concluída: {nome_planilha} | {dest_spreadsheet_id}")
 
 
 # =========================================================
@@ -731,39 +753,51 @@ def main() -> None:
     ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
     ss_orig = executar_com_retry(lambda: client.open_by_key(ORIGEM_SPREADSHEET_ID))
 
-    ids_planilhas = buscar_ids_planilhas(ss_lista)
+    planilhas = buscar_planilhas(ss_lista)
 
-    if not ids_planilhas:
+    if not planilhas:
         raise RuntimeError(
             f"Nenhum ID encontrado em {ABA_LISTA_PLANILHAS}!C3:C "
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
 
-    print(f"Total de planilhas encontradas: {len(ids_planilhas)}")
+    print(f"Total de planilhas encontradas: {len(planilhas)}")
 
     sucessos = []
     erros = []
 
-    for indice, dest_spreadsheet_id in enumerate(ids_planilhas, start=1):
+    for indice, item in enumerate(planilhas, start=1):
+        nome_planilha = item["nome"]
+        dest_spreadsheet_id = item["id"]
+
         try:
             executar_bloco1_para_planilha(
                 client=client,
                 ss_orig=ss_orig,
                 dest_spreadsheet_id=dest_spreadsheet_id,
+                nome_planilha=nome_planilha,
                 indice=indice,
-                total=len(ids_planilhas),
+                total=len(planilhas),
             )
-            sucessos.append(dest_spreadsheet_id)
+
+            sucessos.append(
+                {
+                    "nome": nome_planilha,
+                    "id": dest_spreadsheet_id,
+                }
+            )
 
         except Exception as erro:
             print("")
             print("[ERRO] Falha ao processar uma planilha.")
+            print(f"Nome: {nome_planilha}")
             print(f"ID: {dest_spreadsheet_id}")
             print(f"Erro: {erro}")
             print(traceback.format_exc())
 
             erros.append(
                 {
+                    "nome": nome_planilha,
                     "id": dest_spreadsheet_id,
                     "erro": str(erro),
                 }
@@ -786,15 +820,15 @@ def main() -> None:
 
     if sucessos:
         print("")
-        print("IDs concluídos com sucesso:")
-        for id_ok in sucessos:
-            print(f"- {id_ok}")
+        print("Planilhas concluídas com sucesso:")
+        for item in sucessos:
+            print(f"- {item['nome']} | {item['id']}")
 
     if erros:
         print("")
-        print("IDs com erro:")
+        print("Planilhas com erro:")
         for item in erros:
-            print(f"- {item['id']} | Erro: {item['erro']}")
+            print(f"- {item['nome']} | {item['id']} | Erro: {item['erro']}")
 
         raise RuntimeError(
             f"Processamento finalizado com erro em {len(erros)} planilha(s). "
