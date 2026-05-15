@@ -1,507 +1,387 @@
 import base64
 import json
 import os
-import re
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from gspread.exceptions import APIError, WorksheetNotFound
+from gspread.utils import rowcol_to_a1
 
 
-# =========================
-# CONFIGURAÇÕES PRINCIPAIS
-# =========================
-
-PLANILHA_DESTINO_ID = os.getenv(
-    "PLANILHA_DESTINO_ID",
-    "1QUolOl1Sk1ZdLMLjG9RSNxUsSB8ucydvqXRifxFUOH1jR5Mlc7c33Yu0",
+# =========================================================
+# CONFIGURAÇÕES
+# =========================================================
+DEST_SPREADSHEET_ID = os.getenv(
+    "DEST_SPREADSHEET_ID",
+    "1rj2V7CxbZwkan63eCeLkH9G00Gi041IZNC6vwEgq6yI",
 )
 
-PLANILHA_ORIGEM_ID = os.getenv(
-    "PLANILHA_ORIGEM_ID",
+ORIGEM_SPREADSHEET_ID = os.getenv(
+    "ORIGEM_SPREADSHEET_ID",
     "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs",
 )
 
-TIMEZONE = os.getenv("TIMEZONE", "America/Sao_Paulo")
+TIMEZONE = ZoneInfo("America/Sao_Paulo")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 
-# =========================
-# FUNÇÕES BASE
-# =========================
-
-def obter_credenciais() -> Credentials:
+# =========================================================
+# AUTENTICAÇÃO
+# =========================================================
+def get_gspread_client() -> gspread.Client:
     """
-    Prioridade:
-    1) GOOGLE_CREDENTIALS_B64: secret em Base64 usado no GitHub Actions.
-    2) GOOGLE_APPLICATION_CREDENTIALS: caminho local do JSON.
-    3) service_account.json no diretório do projeto.
+    Aceita credencial de duas formas:
+    1) Secret GOOGLE_CREDENTIALS_B64 no GitHub Actions
+    2) Arquivo local service_account.json, para teste local
     """
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64", "").strip()
 
     if credentials_b64:
-        info = json.loads(base64.b64decode(credentials_b64).decode("utf-8"))
-        return Credentials.from_service_account_info(info, scopes=SCOPES)
+        service_account_info = json.loads(base64.b64decode(credentials_b64).decode("utf-8"))
+        credentials = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=SCOPES,
+        )
+    else:
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
+        credentials = Credentials.from_service_account_file(
+            credentials_path,
+            scopes=SCOPES,
+        )
 
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
-    if os.path.exists(credentials_path):
-        return Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
-
-    raise RuntimeError(
-        "Credenciais não encontradas. Configure GOOGLE_CREDENTIALS_B64 no GitHub "
-        "ou use GOOGLE_APPLICATION_CREDENTIALS/local service_account.json."
-    )
-
-
-def col_para_num(coluna: str) -> int:
-    total = 0
-    for char in coluna.upper():
-        if not ("A" <= char <= "Z"):
-            continue
-        total = total * 26 + (ord(char) - ord("A") + 1)
-    return total
+    return gspread.authorize(credentials)
 
 
-def num_para_col(numero: int) -> str:
-    letras = ""
-    while numero:
-        numero, resto = divmod(numero - 1, 26)
-        letras = chr(65 + resto) + letras
-    return letras
+# =========================================================
+# HELPERS
+# =========================================================
+def executar_com_retry(func, tentativas: int = 5, espera_inicial: float = 2.0):
+    ultimo_erro = None
+
+    for tentativa in range(1, tentativas + 1):
+        try:
+            return func()
+        except APIError as erro:
+            ultimo_erro = erro
+
+            if tentativa == tentativas:
+                raise
+
+            espera = espera_inicial * tentativa
+            print(
+                f"[AVISO] Erro Google API. "
+                f"Tentativa {tentativa}/{tentativas}. Nova tentativa em {espera:.0f}s."
+            )
+            time.sleep(espera)
+
+    raise ultimo_erro
 
 
-def aba(nome: str) -> str:
-    return "'" + nome.replace("'", "''") + "'"
-
-
-def montar_range(nome_aba: str, linha: int, coluna: int, qtd_linhas: int, qtd_colunas: int) -> str:
-    col_ini = num_para_col(coluna)
-    col_fim = num_para_col(coluna + qtd_colunas - 1)
-    lin_fim = linha + qtd_linhas - 1
-    return f"{aba(nome_aba)}!{col_ini}{linha}:{col_fim}{lin_fim}"
-
-
-def matriz_padrao(matriz: List[List[Any]], linhas: int, colunas: int) -> List[List[Any]]:
-    saida = []
-
-    for i in range(linhas):
-        linha = matriz[i] if i < len(matriz) else []
-        linha = list(linha[:colunas])
-
-        if len(linha) < colunas:
-            linha.extend([""] * (colunas - len(linha)))
-
-        saida.append(linha)
-
-    return saida
-
-
-def valor_linha(linha: List[Any], coluna_inicial: str, coluna_desejada: str) -> Any:
-    idx = col_para_num(coluna_desejada) - col_para_num(coluna_inicial)
-
-    if 0 <= idx < len(linha):
-        return linha[idx]
-
-    return ""
-
-
-def definir_valor_entrada(linha: List[Any], coluna_destino: str, valor: Any) -> None:
-    idx = col_para_num(coluna_destino) - col_para_num("C")
-
-    if 0 <= idx < len(linha):
-        linha[idx] = valor
-
-
-def vazio(valor: Any) -> bool:
-    return valor is None or str(valor).strip() == ""
-
-
-def chave(valor: Any) -> str:
-    if valor is None:
-        return ""
-
-    if isinstance(valor, (int, float)):
-        if float(valor).is_integer():
-            return str(int(valor))
-        return str(valor).strip()
-
-    return str(valor).strip()
-
-
-def eh_zero(valor: Any) -> bool:
-    if vazio(valor):
-        return False
-
-    if isinstance(valor, (int, float)):
-        return float(valor) == 0
-
-    texto = str(valor).strip().replace(".", "").replace(",", ".")
-
+def abrir_aba(spreadsheet: gspread.Spreadsheet, nome_aba: str) -> gspread.Worksheet:
     try:
-        return float(texto) == 0
-    except ValueError:
-        return False
+        return spreadsheet.worksheet(nome_aba)
+    except WorksheetNotFound as erro:
+        raise RuntimeError(
+            f"A aba '{nome_aba}' não foi encontrada na planilha '{spreadsheet.title}'."
+        ) from erro
 
 
-def eh_data(valor: Any) -> bool:
-    if vazio(valor):
-        return False
-
-    if isinstance(valor, (int, float)):
-        return float(valor) > 0
-
-    texto = str(valor).strip()
-
-    if texto in {"-", "0", "0,0", "0.0"}:
-        return False
-
-    padroes = [
-        r"^\d{1,2}/\d{1,2}/\d{2,4}$",
-        r"^\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(:\d{2})?$",
-        r"^\d{4}-\d{2}-\d{2}$",
-        r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?",
-    ]
-
-    return any(re.match(padrao, texto) for padrao in padroes)
-
-
-def serial_google_sheets(dt: datetime) -> float:
-    epoch = datetime(1899, 12, 30, tzinfo=dt.tzinfo)
-    return (dt - epoch).total_seconds() / 86400
-
-
-class SheetsClient:
-    def __init__(self) -> None:
-        self.service = build(
-            "sheets",
-            "v4",
-            credentials=obter_credenciais(),
-            cache_discovery=False,
-        )
-
-    def executar(self, fabrica_requisicao, descricao: str = "") -> Dict[str, Any]:
-        tentativas = 6
-
-        for tentativa in range(tentativas):
-            try:
-                return fabrica_requisicao().execute()
-
-            except HttpError as erro:
-                status = getattr(erro.resp, "status", None)
-
-                if status not in {429, 500, 502, 503, 504} or tentativa == tentativas - 1:
-                    raise
-
-                espera = min(60, (2 ** tentativa) + 1)
-                print(
-                    f"Aviso: falha temporária em {descricao or 'requisição'} "
-                    f"({status}). Nova tentativa em {espera}s."
-                )
-                time.sleep(espera)
-
-        return {}
-
-    def get_values(
-        self,
-        spreadsheet_id: str,
-        range_a1: str,
-        value_render_option: str = "UNFORMATTED_VALUE",
-    ) -> List[List[Any]]:
-        resposta = self.executar(
-            lambda: self.service.spreadsheets()
-            .values()
-            .get(
-                spreadsheetId=spreadsheet_id,
-                range=range_a1,
-                valueRenderOption=value_render_option,
-                dateTimeRenderOption="SERIAL_NUMBER",
-            ),
-            f"leitura {range_a1}",
-        )
-
-        return resposta.get("values", [])
-
-    def batch_get(
-        self,
-        spreadsheet_id: str,
-        ranges: List[str],
-        value_render_option: str = "UNFORMATTED_VALUE",
-    ) -> List[List[List[Any]]]:
-        resposta = self.executar(
-            lambda: self.service.spreadsheets()
-            .values()
-            .batchGet(
-                spreadsheetId=spreadsheet_id,
-                ranges=ranges,
-                valueRenderOption=value_render_option,
-                dateTimeRenderOption="SERIAL_NUMBER",
-            ),
-            "batchGet",
-        )
-
-        value_ranges = resposta.get("valueRanges", [])
-        return [vr.get("values", []) for vr in value_ranges]
-
-    def update_values(
-        self,
-        spreadsheet_id: str,
-        range_a1: str,
-        values: List[List[Any]],
-        value_input_option: str = "RAW",
-    ) -> None:
-        self.executar(
-            lambda: self.service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=spreadsheet_id,
-                range=range_a1,
-                valueInputOption=value_input_option,
-                body={"values": values},
-            ),
-            f"escrita {range_a1}",
-        )
-
-    def clear_values(self, spreadsheet_id: str, ranges: List[str]) -> None:
-        self.executar(
-            lambda: self.service.spreadsheets()
-            .values()
-            .batchClear(
-                spreadsheetId=spreadsheet_id,
-                body={"ranges": ranges},
-            ),
-            "limpeza de ranges",
-        )
-
-    def batch_update(self, spreadsheet_id: str, requests: List[Dict[str, Any]]) -> None:
-        if not requests:
-            return
-
-        self.executar(
-            lambda: self.service.spreadsheets()
-            .batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"requests": requests},
-            ),
-            "batchUpdate",
-        )
-
-    def get_sheet_id(self, spreadsheet_id: str, sheet_name: str) -> Optional[int]:
-        resposta = self.executar(
-            lambda: self.service.spreadsheets()
-            .get(
-                spreadsheetId=spreadsheet_id,
-                fields="sheets(properties(sheetId,title))",
-            ),
-            "metadata da planilha",
-        )
-
-        for sheet in resposta.get("sheets", []):
-            props = sheet.get("properties", {})
-
-            if props.get("title") == sheet_name:
-                return props.get("sheetId")
-
-        return None
-
-
-def atualizar_status(client: SheetsClient, texto: str) -> None:
-    client.update_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('Entrada')}!F2",
-        [[texto]],
-        value_input_option="USER_ENTERED",
-    )
-
-
-def finalizar_status_com_data(client: SheetsClient) -> None:
-    dt = datetime.now(ZoneInfo(TIMEZONE))
-    serial = serial_google_sheets(dt)
-
-    client.update_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('Entrada')}!F2",
-        [[serial]],
-        value_input_option="USER_ENTERED",
-    )
-
-    sheet_id = client.get_sheet_id(PLANILHA_DESTINO_ID, "Entrada")
-
-    if sheet_id is None:
+def limpar_intervalos(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
+    if not ranges:
         return
 
-    client.batch_update(
-        PLANILHA_DESTINO_ID,
-        [
-            {
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 1,
-                        "endRowIndex": 2,
-                        "startColumnIndex": 5,
-                        "endColumnIndex": 6,
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "numberFormat": {
-                                "type": "DATE_TIME",
-                                "pattern": "dd/MM/yyyy HH:mm:ss",
-                            }
-                        }
-                    },
-                    "fields": "userEnteredFormat.numberFormat",
-                }
-            }
-        ],
+    executar_com_retry(lambda: worksheet.batch_clear(ranges))
+
+
+def escrever_celula(worksheet: gspread.Worksheet, a1: str, valor, raw: bool = True) -> None:
+    value_input_option = "RAW" if raw else "USER_ENTERED"
+
+    executar_com_retry(
+        lambda: worksheet.update(
+            range_name=a1,
+            values=[[valor]],
+            value_input_option=value_input_option,
+        )
     )
 
 
-def update_chunked(
-    client: SheetsClient,
-    spreadsheet_id: str,
-    sheet_name: str,
+def escrever_matriz(
+    worksheet: gspread.Worksheet,
     start_row: int,
     start_col: int,
-    values: List[List[Any]],
-    value_input_option: str = "RAW",
+    values: list[list],
+    raw: bool = True,
+    chunk_size: int = CHUNK_SIZE,
 ) -> None:
     if not values:
         return
 
-    qtd_colunas = max(len(row) for row in values)
-    valores_normalizados = []
+    value_input_option = "RAW" if raw else "USER_ENTERED"
+    total_cols = max(len(row) for row in values)
 
-    for row in values:
-        nova = list(row[:qtd_colunas])
+    for offset in range(0, len(values), chunk_size):
+        bloco = values[offset : offset + chunk_size]
 
-        if len(nova) < qtd_colunas:
-            nova.extend([""] * (qtd_colunas - len(nova)))
+        row_ini = start_row + offset
+        row_fim = row_ini + len(bloco) - 1
+        col_fim = start_col + total_cols - 1
 
-        valores_normalizados.append(nova)
+        range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
 
-    for inicio in range(0, len(valores_normalizados), CHUNK_SIZE):
-        bloco = valores_normalizados[inicio: inicio + CHUNK_SIZE]
+        bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
 
-        range_a1 = montar_range(
-            sheet_name,
-            start_row + inicio,
-            start_col,
-            len(bloco),
-            qtd_colunas,
+        executar_com_retry(
+            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
+                range_name=range_a1,
+                values=bloco_padronizado,
+                value_input_option=value_input_option,
+            )
         )
 
-        client.update_values(
-            spreadsheet_id,
+
+def ler_range(
+    worksheet: gspread.Worksheet,
+    range_a1: str,
+    n_rows: int | None = None,
+    n_cols: int | None = None,
+) -> list[list]:
+    valores = executar_com_retry(
+        lambda: worksheet.get(
             range_a1,
-            bloco,
-            value_input_option=value_input_option,
+            value_render_option="UNFORMATTED_VALUE",
+            date_time_render_option="FORMATTED_STRING",
         )
-
-
-# =========================
-# BLOCO 1.1 - Cart_Validador
-# =========================
-
-def atualizar_cart_validador(client: SheetsClient) -> None:
-    print("Iniciando etapa 1/3: Cart_Validador")
-    atualizar_status(client, "Etapa 1 de 3")
-
-    client.clear_values(
-        PLANILHA_DESTINO_ID,
-        [f"{aba('Cart_Validador')}!A1:B"],
     )
 
-    col_g, col_as = client.batch_get(
-        PLANILHA_ORIGEM_ID,
-        [
-            f"{aba('Carteira_Validações')}!G1:G",
-            f"{aba('Carteira_Validações')}!AS1:AS",
-        ],
+    if n_rows is None and n_cols is None:
+        return valores
+
+    if n_rows is None:
+        n_rows = len(valores)
+
+    if n_cols is None:
+        n_cols = max((len(row) for row in valores), default=0)
+
+    return pad_matrix(valores, n_rows, n_cols)
+
+
+def ler_coluna(worksheet: gspread.Worksheet, col: int) -> list:
+    valores = executar_com_retry(
+        lambda: worksheet.col_values(
+            col,
+            value_render_option="UNFORMATTED_VALUE",
+        )
     )
+    return valores
 
-    last_row = len(col_as)
 
-    if last_row == 0:
-        print("Cart_Validador sem dados para importar.")
+def ultima_linha_preenchida_por_coluna(worksheet: gspread.Worksheet, col: int) -> int:
+    valores = ler_coluna(worksheet, col)
+
+    for idx in range(len(valores) - 1, -1, -1):
+        if not is_blank(valores[idx]):
+            return idx + 1
+
+    return 0
+
+
+def pad_row(row: list, n_cols: int) -> list:
+    row = list(row or [])
+
+    if len(row) < n_cols:
+        row += [""] * (n_cols - len(row))
+
+    return row[:n_cols]
+
+
+def pad_matrix(values: list[list], n_rows: int, n_cols: int) -> list[list]:
+    saida = []
+
+    for i in range(n_rows):
+        row = values[i] if i < len(values) else []
+        saida.append(pad_row(row, n_cols))
+
+    return saida
+
+
+def is_blank(valor) -> bool:
+    return valor is None or valor == ""
+
+
+def as_text(valor) -> str:
+    if valor is None:
+        return ""
+
+    return str(valor)
+
+
+def is_zero(valor) -> bool:
+    if valor == 0:
+        return True
+
+    if isinstance(valor, str):
+        texto = valor.strip().replace(",", ".")
+        return texto in {"0", "0.0"}
+
+    return False
+
+
+def is_date_like(valor) -> bool:
+    """
+    Aproxima o comportamento do ISDATE do Google Sheets para as colunas usadas no Bloco 1.
+    Considera datas vindas como texto formatado ou serial numérico plausível.
+    """
+    if valor is None or valor == "":
+        return False
+
+    if isinstance(valor, datetime):
+        return True
+
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        return 20000 <= float(valor) <= 90000
+
+    if isinstance(valor, str):
+        texto = valor.strip()
+
+        if not texto:
+            return False
+
+        formatos = [
+            "%d/%m/%Y",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
+            "%Y-%m-%d",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+
+        for formato in formatos:
+            try:
+                datetime.strptime(texto[:19], formato)
+                return True
+            except ValueError:
+                pass
+
+    return False
+
+
+def montar_mapa_primeira_ocorrencia(
+    rows: list[list],
+    key_col_idx: int,
+    value_col_idx: int,
+) -> dict[str, object]:
+    mapa = {}
+
+    for row in rows:
+        chave = row[key_col_idx] if key_col_idx < len(row) else ""
+
+        if is_blank(chave):
+            continue
+
+        chave_txt = as_text(chave)
+
+        if chave_txt not in mapa:
+            mapa[chave_txt] = row[value_col_idx] if value_col_idx < len(row) else ""
+
+    return mapa
+
+
+def valor_coluna(row: list, col_planilha: int, col_inicial_range: int = 2):
+    """
+    Para ranges lidos a partir da coluna B.
+    Exemplo: se range é B:AW, B=índice 0, C=índice 1, etc.
+    """
+    idx = col_planilha - col_inicial_range
+
+    if idx < 0 or idx >= len(row):
+        return ""
+
+    return row[idx]
+
+
+# =========================================================
+# BLOCO 1.1 - atualizarCart_Validador
+# =========================================================
+def atualizar_cart_validador(
+    ss_dest: gspread.Spreadsheet,
+    ss_orig: gspread.Spreadsheet,
+) -> None:
+    print("[1/3] Atualizando Cart_Validador...")
+
+    aba_entrada = abrir_aba(ss_dest, "Entrada")
+    aba_cart_validador_dest = abrir_aba(ss_dest, "Cart_Validador")
+    aba_validacoes_orig = abrir_aba(ss_orig, "Carteira_Validações")
+
+    escrever_celula(aba_entrada, "F2", "Etapa 1 de 3")
+
+    limpar_intervalos(aba_cart_validador_dest, ["A1:B"])
+
+    # G = coluna 7 | AS = coluna 45
+    ultima_linha_as = ultima_linha_preenchida_por_coluna(aba_validacoes_orig, 45)
+
+    if ultima_linha_as == 0:
+        print("[1/3] Carteira_Validações sem dados na coluna AS. Cart_Validador ficou vazio.")
         return
+
+    col_g = ler_range(aba_validacoes_orig, f"G1:G{ultima_linha_as}", ultima_linha_as, 1)
+    col_as = ler_range(aba_validacoes_orig, f"AS1:AS{ultima_linha_as}", ultima_linha_as, 1)
 
     saida = []
 
-    for i in range(last_row):
-        valor_g = col_g[i][0] if i < len(col_g) and col_g[i] else ""
-        valor_as = col_as[i][0] if i < len(col_as) and col_as[i] else ""
+    for i in range(ultima_linha_as):
+        saida.append(
+            [
+                col_g[i][0] if i < len(col_g) else "",
+                col_as[i][0] if i < len(col_as) else "",
+            ]
+        )
 
-        saida.append([valor_g, valor_as])
+    escrever_matriz(aba_cart_validador_dest, 1, 1, saida)
 
-    update_chunked(
-        client,
-        PLANILHA_DESTINO_ID,
-        "Cart_Validador",
-        1,
-        1,
-        saida,
-    )
-
-    print(f"Etapa 1/3 concluída. Linhas importadas: {len(saida)}")
+    print(f"[1/3] Cart_Validador atualizado com {len(saida)} linhas.")
 
 
-# =========================
-# BLOCO 1.2 - Carteira
-# =========================
+# =========================================================
+# BLOCO 1.2 - atualizarCarteira
+# =========================================================
+def atualizar_carteira(
+    ss_dest: gspread.Spreadsheet,
+    ss_orig: gspread.Spreadsheet,
+) -> None:
+    print("[2/3] Atualizando Carteira...")
 
-def atualizar_carteira(client: SheetsClient) -> None:
-    print("Iniciando etapa 2/3: Carteira")
-    atualizar_status(client, "Etapa 2 de 3")
+    aba_entrada = abrir_aba(ss_dest, "Entrada")
+    aba_carteira_dest = abrir_aba(ss_dest, "Carteira")
+    aba_carteira_orig = abrir_aba(ss_orig, "Carteira")
 
-    client.clear_values(
-        PLANILHA_DESTINO_ID,
-        [
-            f"{aba('Carteira')}!C1:AW",
-            f"{aba('Carteira')}!B2:B",
-        ],
-    )
+    escrever_celula(aba_entrada, "F2", "Etapa 2 de 3")
 
     start_row = 5
+    last_src = ultima_linha_preenchida_por_coluna(aba_carteira_orig, 1)
+    num_rows = max(0, last_src - (start_row - 1))
 
-    col_a = client.get_values(
-        PLANILHA_ORIGEM_ID,
-        f"{aba('Carteira')}!A:A",
-    )
+    limpar_intervalos(aba_carteira_dest, ["C1:AW", "B2:B"])
 
-    last_src = len(col_a)
-
-    if last_src < start_row:
-        print("Carteira origem sem dados a partir da linha 5.")
+    if num_rows == 0:
+        print("[2/3] Nenhum dado encontrado na origem a partir da linha 5.")
         return
 
-    num_rows = last_src - (start_row - 1)
+    blk_a_ad = ler_range(aba_carteira_orig, f"A{start_row}:AD{last_src}", num_rows, 30)
+    blk_aj_ak = ler_range(aba_carteira_orig, f"AJ{start_row}:AK{last_src}", num_rows, 2)
+    blk_aw_ax = ler_range(aba_carteira_orig, f"AW{start_row}:AX{last_src}", num_rows, 2)
+    blk_ca_cf = ler_range(aba_carteira_orig, f"CA{start_row}:CF{last_src}", num_rows, 6)
+    blk_bq_cy = ler_range(aba_carteira_orig, f"BQ{start_row}:CY{last_src}", num_rows, 35)
+    blk_cg_ch = ler_range(aba_carteira_orig, f"CG{start_row}:CH{last_src}", num_rows, 2)
 
-    blocos = client.batch_get(
-        PLANILHA_ORIGEM_ID,
-        [
-            f"{aba('Carteira')}!A{start_row}:AD{last_src}",
-            f"{aba('Carteira')}!AJ{start_row}:AK{last_src}",
-            f"{aba('Carteira')}!AW{start_row}:AX{last_src}",
-            f"{aba('Carteira')}!CA{start_row}:CF{last_src}",
-            f"{aba('Carteira')}!BQ{start_row}:CY{last_src}",
-            f"{aba('Carteira')}!CG{start_row}:CH{last_src}",
-        ],
-    )
-
-    blk_a_ad = matriz_padrao(blocos[0], num_rows, 30)
-    blk_aj_ak = matriz_padrao(blocos[1], num_rows, 2)
-    blk_aw_ax = matriz_padrao(blocos[2], num_rows, 2)
-    blk_ca_cf = matriz_padrao(blocos[3], num_rows, 6)
-    blk_bq_cy = matriz_padrao(blocos[4], num_rows, 35)
-    blk_cg_ch = matriz_padrao(blocos[5], num_rows, 2)
-
-    saida = []
+    saida_c_aw = []
 
     for i in range(num_rows):
         row = [""] * 47
@@ -568,226 +448,209 @@ def atualizar_carteira(client: SheetsClient) -> None:
         row[44] = r_cg[0]
         row[45] = r_cg[1]
 
-        saida.append(row)
+        saida_c_aw.append(row)
 
-    update_chunked(
-        client,
-        PLANILHA_DESTINO_ID,
-        "Carteira",
-        1,
-        3,
-        saida,
+    escrever_matriz(aba_carteira_dest, 1, 3, saida_c_aw)
+
+    # Calcula coluna B via script
+    aba_config = abrir_aba(ss_dest, "BD_Config")
+    cfg_vals = ler_range(aba_config, "B4:B9", 6, 1)
+    cfg_set = {as_text(row[0]) for row in cfg_vals if not is_blank(row[0])}
+
+    aba_plan = abrir_aba(ss_dest, "Carteira_Planejador")
+    last_plan = ultima_linha_preenchida_por_coluna(aba_plan, 13)
+
+    q_vals = (
+        ler_range(aba_plan, f"M1:M{last_plan}", last_plan, 1)
+        if last_plan > 0
+        else []
     )
 
-    # Cálculo da coluna B, equivalente ao bloco do Apps Script.
-    cfg_vals = client.get_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('BD_Config')}!B4:B9",
-    )
+    freq = {}
 
-    cfg_set = {
-        chave(row[0])
-        for row in cfg_vals
-        if row and not vazio(row[0])
-    }
+    for row in q_vals:
+        valor = row[0] if row else ""
 
-    plan_vals = client.get_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('Carteira_Planejador')}!M:M",
-    )
-
-    freq: Dict[str, int] = {}
-
-    for row in plan_vals:
-        if not row or vazio(row[0]):
+        if is_blank(valor):
             continue
 
-        key = chave(row[0])
-        freq[key] = freq.get(key, 0) + 1
+        chave = as_text(valor)
+        freq[chave] = freq.get(chave, 0) + 1
 
     if num_rows >= 2:
-        b_out = []
+        saida_b = []
 
         for i in range(1, num_rows):
-            col_c = saida[i][0]
-            col_d = saida[i][1]
-            col_o = saida[i][12]
+            col_c = saida_c_aw[i][0]
+            col_d = saida_c_aw[i][1]
+            col_o = saida_c_aw[i][12]
 
-            if vazio(col_c):
-                valor = ""
-
-            elif chave(col_d) != "OBRA RETIRADA" and chave(col_o) in cfg_set:
-                valor = freq.get(chave(col_c), 0)
-
+            if is_blank(col_c):
+                valor_b = ""
+            elif as_text(col_d) != "OBRA RETIRADA" and as_text(col_o) in cfg_set:
+                valor_b = freq.get(as_text(col_c), 0)
             else:
-                valor = "-"
+                valor_b = "-"
 
-            b_out.append([valor])
+            saida_b.append([valor_b])
 
-        update_chunked(
-            client,
-            PLANILHA_DESTINO_ID,
-            "Carteira",
-            2,
-            2,
-            b_out,
-        )
+        escrever_matriz(aba_carteira_dest, 2, 2, saida_b)
 
-    print(f"Etapa 2/3 concluída. Linhas processadas: {num_rows}")
+    print(f"[2/3] Carteira atualizada com {num_rows} linhas em C:AW.")
 
 
-# =========================
-# BLOCO 1.3 - Entrada
-# =========================
+# =========================================================
+# BLOCO 1.3 - atualizarEntradaNova
+# =========================================================
+def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
+    print("[3/3] Atualizando Entrada...")
 
-def atualizar_entrada_nova(client: SheetsClient) -> None:
-    print("Iniciando etapa 3/3: Entrada")
-    atualizar_status(client, "Etapa 3 de 3")
+    aba_entrada = abrir_aba(ss_dest, "Entrada")
+    aba_carteira = abrir_aba(ss_dest, "Carteira")
+    aba_cart_validador = abrir_aba(ss_dest, "Cart_Validador")
 
-    client.clear_values(
-        PLANILHA_DESTINO_ID,
-        [f"{aba('Entrada')}!B6:AD"],
+    escrever_celula(aba_entrada, "F2", "Etapa 3 de 3")
+
+    limpar_intervalos(aba_entrada, ["B6:AD"])
+
+    last_carteira = ultima_linha_preenchida_por_coluna(aba_carteira, 3)
+
+    if last_carteira == 0:
+        finalizar_execucao(aba_entrada)
+        print("[3/3] Carteira sem dados. Entrada ficou vazia.")
+        return
+
+    # Lê B:AW porque o filtro usa B e as demais colunas estão até AW.
+    carteira_rows = ler_range(aba_carteira, f"B1:AW{last_carteira}", last_carteira, 48)
+
+    last_validador = ultima_linha_preenchida_por_coluna(aba_cart_validador, 1)
+
+    cart_validador_rows = (
+        ler_range(aba_cart_validador, f"A1:B{last_validador}", last_validador, 2)
+        if last_validador > 0
+        else []
     )
 
-    validador = client.get_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('Cart_Validador')}!A:B",
-    )
+    mapa_observacao = montar_mapa_primeira_ocorrencia(cart_validador_rows, 0, 1)
 
-    obs_lookup: Dict[str, Any] = {}
+    # Mapas para simular XLOOKUP em Carteira!C:C
+    mapa_c_para_h = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 6)    # C -> H
+    mapa_c_para_aa = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 25)  # C -> AA
+    mapa_c_para_af = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 30)  # C -> AF
 
-    for row in validador:
-        if not row or vazio(row[0]):
+    saida_c_ad = []
+
+    for row in carteira_rows:
+        valor_b = valor_coluna(row, 2)
+
+        if is_blank(valor_b) or not is_zero(valor_b):
             continue
 
-        key = chave(row[0])
+        projeto = valor_coluna(row, 3)
+        projeto_key = as_text(projeto)
 
-        if key not in obs_lookup:
-            obs_lookup[key] = row[1] if len(row) > 1 else ""
+        flag_c = 2 if as_text(mapa_c_para_h.get(projeto_key, "")) == "APTA" else 0
+        flag_d = 2 if is_date_like(mapa_c_para_aa.get(projeto_key, "")) else 0
+        flag_e = 2 if is_date_like(mapa_c_para_af.get(projeto_key, "")) else 0
 
-    carteira_raw = client.get_values(
-        PLANILHA_DESTINO_ID,
-        f"{aba('Carteira')}!B1:AW",
-    )
+        # Saída C:AD = 28 colunas
+        out = [""] * 28
 
-    carteira = matriz_padrao(carteira_raw, len(carteira_raw), 48)
+        # C:E
+        out[0] = flag_c
+        out[1] = flag_d
+        out[2] = flag_e
 
-    primeira_ocorrencia_por_projeto: Dict[str, Dict[str, Any]] = {}
+        # F = Carteira!G
+        out[3] = valor_coluna(row, 7)
 
-    for row in carteira:
-        projeto = valor_linha(row, "B", "C")
-        key = chave(projeto)
+        # G = Carteira!E
+        out[4] = valor_coluna(row, 5)
 
-        if vazio(key) or key in primeira_ocorrencia_por_projeto:
-            continue
+        # H = Carteira!D
+        out[5] = valor_coluna(row, 4)
 
-        primeira_ocorrencia_por_projeto[key] = {
-            "H": valor_linha(row, "B", "H"),
-            "AA": valor_linha(row, "B", "AA"),
-            "AF": valor_linha(row, "B", "AF"),
-        }
+        # I:K ficam vazias
 
-    saida = []
+        # L = Carteira!C
+        out[9] = projeto
 
-    for row in carteira:
-        status_b = valor_linha(row, "B", "B")
+        # M = Carteira!S
+        out[10] = valor_coluna(row, 19)
 
-        if not eh_zero(status_b):
-            continue
+        # N:O = Carteira!Q:R
+        out[11] = valor_coluna(row, 17)
+        out[12] = valor_coluna(row, 18)
 
-        projeto = valor_linha(row, "B", "C")
-        projeto_key = chave(projeto)
+        # P fica vazia
 
-        lookup = primeira_ocorrencia_por_projeto.get(projeto_key, {})
+        # Q = Carteira!U
+        out[14] = valor_coluna(row, 21)
 
-        nova = [""] * 28  # Entrada C:AD
+        # R:S = Carteira!V:W
+        out[15] = valor_coluna(row, 22)
+        out[16] = valor_coluna(row, 23)
 
-        # C, D, E
-        definir_valor_entrada(
-            nova,
-            "C",
-            2 if chave(lookup.get("H", "")) == "APTA" else 0,
-        )
+        # T:U = Carteira!X:Y
+        out[17] = valor_coluna(row, 24)
+        out[18] = valor_coluna(row, 25)
 
-        definir_valor_entrada(
-            nova,
-            "D",
-            2 if eh_data(lookup.get("AA", "")) else 0,
-        )
+        # V:W ficam vazias
 
-        definir_valor_entrada(
-            nova,
-            "E",
-            2 if eh_data(lookup.get("AF", "")) else 0,
-        )
+        # X = Carteira!T
+        out[21] = valor_coluna(row, 20)
 
-        # Mesma distribuição das fórmulas FILTER do Apps Script.
-        definir_valor_entrada(nova, "F", valor_linha(row, "B", "G"))
-        definir_valor_entrada(nova, "G", valor_linha(row, "B", "E"))
-        definir_valor_entrada(nova, "H", valor_linha(row, "B", "D"))
+        # Y = Observações Carteira via Cart_Validador
+        out[22] = mapa_observacao.get(projeto_key, "")
 
-        definir_valor_entrada(nova, "L", valor_linha(row, "B", "C"))
-        definir_valor_entrada(nova, "M", valor_linha(row, "B", "S"))
+        # Z:AA = Carteira!Z:AA
+        out[23] = valor_coluna(row, 26)
+        out[24] = valor_coluna(row, 27)
 
-        definir_valor_entrada(nova, "N", valor_linha(row, "B", "Q"))
-        definir_valor_entrada(nova, "O", valor_linha(row, "B", "R"))
+        # AB:AC = Carteira!AD:AE
+        out[25] = valor_coluna(row, 30)
+        out[26] = valor_coluna(row, 31)
 
-        definir_valor_entrada(nova, "Q", valor_linha(row, "B", "U"))
+        # AD = Carteira!O
+        out[27] = valor_coluna(row, 15)
 
-        definir_valor_entrada(nova, "R", valor_linha(row, "B", "V"))
-        definir_valor_entrada(nova, "S", valor_linha(row, "B", "W"))
+        saida_c_ad.append(out)
 
-        definir_valor_entrada(nova, "T", valor_linha(row, "B", "X"))
-        definir_valor_entrada(nova, "U", valor_linha(row, "B", "Y"))
+    if saida_c_ad:
+        escrever_matriz(aba_entrada, 6, 3, saida_c_ad)
 
-        definir_valor_entrada(nova, "X", valor_linha(row, "B", "T"))
-        definir_valor_entrada(nova, "Y", obs_lookup.get(projeto_key, ""))
+    finalizar_execucao(aba_entrada)
 
-        definir_valor_entrada(nova, "Z", valor_linha(row, "B", "Z"))
-        definir_valor_entrada(nova, "AA", valor_linha(row, "B", "AA"))
-
-        definir_valor_entrada(nova, "AB", valor_linha(row, "B", "AD"))
-        definir_valor_entrada(nova, "AC", valor_linha(row, "B", "AE"))
-
-        definir_valor_entrada(nova, "AD", valor_linha(row, "B", "O"))
-
-        saida.append(nova)
-
-    if saida:
-        update_chunked(
-            client,
-            PLANILHA_DESTINO_ID,
-            "Entrada",
-            6,
-            3,
-            saida,
-        )
-
-    finalizar_status_com_data(client)
-
-    print(f"Etapa 3/3 concluída. Linhas enviadas para Entrada: {len(saida)}")
+    print(f"[3/3] Entrada atualizada com {len(saida_c_ad)} linhas.")
 
 
-# =========================
-# EXECUÇÃO PRINCIPAL
-# =========================
+def finalizar_execucao(aba_entrada: gspread.Worksheet) -> None:
+    data_hora = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M:%S")
+    escrever_celula(aba_entrada, "F2", data_hora)
 
+
+# =========================================================
+# MAIN
+# =========================================================
 def main() -> None:
-    inicio = time.time()
+    inicio = datetime.now(TIMEZONE)
 
-    print("Robô Bloco 1 - Entrada iniciado.")
-    print(f"Planilha destino: {PLANILHA_DESTINO_ID}")
-    print(f"Planilha origem: {PLANILHA_ORIGEM_ID}")
+    print(f"Início do Bloco 1 - Entrada: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
 
-    client = SheetsClient()
+    client = get_gspread_client()
 
-    atualizar_cart_validador(client)
-    atualizar_carteira(client)
-    atualizar_entrada_nova(client)
+    ss_dest = executar_com_retry(lambda: client.open_by_key(DEST_SPREADSHEET_ID))
+    ss_orig = executar_com_retry(lambda: client.open_by_key(ORIGEM_SPREADSHEET_ID))
 
-    duracao = round(time.time() - inicio, 2)
+    atualizar_cart_validador(ss_dest, ss_orig)
+    atualizar_carteira(ss_dest, ss_orig)
+    atualizar_entrada_nova(ss_dest)
 
-    print(f"Robô Bloco 1 finalizado com sucesso em {duracao}s.")
+    fim = datetime.now(TIMEZONE)
+    duracao = (fim - inicio).total_seconds()
+
+    print(f"Fim do Bloco 1 - Entrada: {fim.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"Duração total: {duracao:.1f}s")
 
 
 if __name__ == "__main__":
