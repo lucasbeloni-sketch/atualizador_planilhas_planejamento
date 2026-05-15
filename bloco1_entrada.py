@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import time
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,9 +15,14 @@ from gspread.utils import rowcol_to_a1
 # =========================================================
 # CONFIGURAÇÕES
 # =========================================================
-DEST_SPREADSHEET_ID = os.getenv(
-    "DEST_SPREADSHEET_ID",
-    "1rj2V7CxbZwkan63eCeLkH9G00Gi041IZNC6vwEgq6yI",
+LISTA_PLANILHAS_SPREADSHEET_ID = os.getenv(
+    "LISTA_PLANILHAS_SPREADSHEET_ID",
+    "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig",
+)
+
+ABA_LISTA_PLANILHAS = os.getenv(
+    "ABA_LISTA_PLANILHAS",
+    "BD_Planilhas",
 )
 
 ORIGEM_SPREADSHEET_ID = os.getenv(
@@ -312,7 +318,7 @@ def montar_mapa_primeira_ocorrencia(
         if is_blank(chave):
             continue
 
-        chave_txt = as_text(chave)
+        chave_txt = as_text(chave).strip()
 
         if chave_txt not in mapa:
             mapa[chave_txt] = row[value_col_idx] if value_col_idx < len(row) else ""
@@ -331,6 +337,35 @@ def valor_coluna(row: list, col_planilha: int, col_inicial_range: int = 2):
         return ""
 
     return row[idx]
+
+
+def buscar_ids_planilhas(ss_lista: gspread.Spreadsheet) -> list[str]:
+    """
+    Busca os IDs das planilhas na aba BD_Planilhas, coluna C, a partir da linha 3.
+    Remove vazios e IDs duplicados.
+    """
+    aba_lista = abrir_aba(ss_lista, ABA_LISTA_PLANILHAS)
+    valores_coluna_c = ler_coluna(aba_lista, 3)
+
+    ids = []
+    ids_vistos = set()
+
+    for linha, valor in enumerate(valores_coluna_c, start=1):
+        if linha < 3:
+            continue
+
+        id_planilha = as_text(valor).strip()
+
+        if not id_planilha:
+            continue
+
+        if id_planilha in ids_vistos:
+            continue
+
+        ids.append(id_planilha)
+        ids_vistos.add(id_planilha)
+
+    return ids
 
 
 # =========================================================
@@ -480,7 +515,7 @@ def atualizar_carteira(
     # Calcula coluna B via script
     aba_config = abrir_aba(ss_dest, "BD_Config")
     cfg_vals = ler_range(aba_config, "B4:B9", 6, 1)
-    cfg_set = {as_text(row[0]) for row in cfg_vals if not is_blank(row[0])}
+    cfg_set = {as_text(row[0]).strip() for row in cfg_vals if not is_blank(row[0])}
 
     aba_plan = abrir_aba(ss_dest, "Carteira_Planejador")
     last_plan = ultima_linha_preenchida_por_coluna(aba_plan, 13)
@@ -499,7 +534,7 @@ def atualizar_carteira(
         if is_blank(valor):
             continue
 
-        chave = as_text(valor)
+        chave = as_text(valor).strip()
         freq[chave] = freq.get(chave, 0) + 1
 
     if num_rows >= 2:
@@ -512,8 +547,8 @@ def atualizar_carteira(
 
             if is_blank(col_c):
                 valor_b = ""
-            elif as_text(col_d) != "OBRA RETIRADA" and as_text(col_o) in cfg_set:
-                valor_b = freq.get(as_text(col_c), 0)
+            elif as_text(col_d).strip() != "OBRA RETIRADA" and as_text(col_o).strip() in cfg_set:
+                valor_b = freq.get(as_text(col_c).strip(), 0)
             else:
                 valor_b = "-"
 
@@ -576,9 +611,9 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
             continue
 
         projeto = valor_coluna(row, 3)
-        projeto_key = as_text(projeto)
+        projeto_key = as_text(projeto).strip()
 
-        flag_c = 2 if as_text(mapa_c_para_h.get(projeto_key, "")) == "APTA" else 0
+        flag_c = 2 if as_text(mapa_c_para_h.get(projeto_key, "")).strip() == "APTA" else 0
         flag_d = 2 if is_date_like(mapa_c_para_aa.get(projeto_key, "")) else 0
         flag_e = 2 if is_date_like(mapa_c_para_af.get(projeto_key, "")) else 0
 
@@ -659,27 +694,115 @@ def finalizar_execucao(aba_entrada: gspread.Worksheet) -> None:
 
 
 # =========================================================
-# MAIN
+# EXECUÇÃO DE UMA PLANILHA
 # =========================================================
-def main() -> None:
-    inicio = datetime.now(TIMEZONE)
+def executar_bloco1_para_planilha(
+    client: gspread.Client,
+    ss_orig: gspread.Spreadsheet,
+    dest_spreadsheet_id: str,
+    indice: int,
+    total: int,
+) -> None:
+    print("")
+    print("=" * 80)
+    print(f"Executando planilha {indice}/{total}")
+    print(f"ID destino: {dest_spreadsheet_id}")
+    print("=" * 80)
 
-    print(f"Início do Bloco 1 - Entrada: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
-
-    client = get_gspread_client()
-
-    ss_dest = executar_com_retry(lambda: client.open_by_key(DEST_SPREADSHEET_ID))
-    ss_orig = executar_com_retry(lambda: client.open_by_key(ORIGEM_SPREADSHEET_ID))
+    ss_dest = executar_com_retry(lambda: client.open_by_key(dest_spreadsheet_id))
 
     atualizar_cart_validador(ss_dest, ss_orig)
     atualizar_carteira(ss_dest, ss_orig)
     atualizar_entrada_nova(ss_dest)
 
+    print(f"[OK] Planilha concluída: {dest_spreadsheet_id}")
+
+
+# =========================================================
+# MAIN
+# =========================================================
+def main() -> None:
+    inicio = datetime.now(TIMEZONE)
+
+    print(f"Início geral do Bloco 1 - Entrada: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
+
+    client = get_gspread_client()
+
+    ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
+    ss_orig = executar_com_retry(lambda: client.open_by_key(ORIGEM_SPREADSHEET_ID))
+
+    ids_planilhas = buscar_ids_planilhas(ss_lista)
+
+    if not ids_planilhas:
+        raise RuntimeError(
+            f"Nenhum ID encontrado em {ABA_LISTA_PLANILHAS}!C3:C "
+            f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
+        )
+
+    print(f"Total de planilhas encontradas: {len(ids_planilhas)}")
+
+    sucessos = []
+    erros = []
+
+    for indice, dest_spreadsheet_id in enumerate(ids_planilhas, start=1):
+        try:
+            executar_bloco1_para_planilha(
+                client=client,
+                ss_orig=ss_orig,
+                dest_spreadsheet_id=dest_spreadsheet_id,
+                indice=indice,
+                total=len(ids_planilhas),
+            )
+            sucessos.append(dest_spreadsheet_id)
+
+        except Exception as erro:
+            print("")
+            print("[ERRO] Falha ao processar uma planilha.")
+            print(f"ID: {dest_spreadsheet_id}")
+            print(f"Erro: {erro}")
+            print(traceback.format_exc())
+
+            erros.append(
+                {
+                    "id": dest_spreadsheet_id,
+                    "erro": str(erro),
+                }
+            )
+
+            continue
+
     fim = datetime.now(TIMEZONE)
     duracao = (fim - inicio).total_seconds()
 
-    print(f"Fim do Bloco 1 - Entrada: {fim.strftime('%d/%m/%Y %H:%M:%S')}")
+    print("")
+    print("=" * 80)
+    print("RESUMO FINAL")
+    print("=" * 80)
+    print(f"Início: {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"Fim: {fim.strftime('%d/%m/%Y %H:%M:%S')}")
     print(f"Duração total: {duracao:.1f}s")
+    print(f"Planilhas com sucesso: {len(sucessos)}")
+    print(f"Planilhas com erro: {len(erros)}")
+
+    if sucessos:
+        print("")
+        print("IDs concluídos com sucesso:")
+        for id_ok in sucessos:
+            print(f"- {id_ok}")
+
+    if erros:
+        print("")
+        print("IDs com erro:")
+        for item in erros:
+            print(f"- {item['id']} | Erro: {item['erro']}")
+
+        raise RuntimeError(
+            f"Processamento finalizado com erro em {len(erros)} planilha(s). "
+            f"Verifique o log acima."
+        )
+
+    print("")
+    print("Todas as planilhas foram processadas com sucesso.")
 
 
 if __name__ == "__main__":
