@@ -1,4 +1,4 @@
 google-api-python-client
-gspread
-google-auth
+gspread>=6.0.0,<7.0.0
+google-auth>=2.0.0,<3.0.0-auth
 pandas
