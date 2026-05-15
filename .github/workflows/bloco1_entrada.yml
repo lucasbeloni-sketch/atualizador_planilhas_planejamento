@@ -10,7 +10,7 @@ concurrency:
 jobs:
   executar:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Baixar repositório
@@ -29,7 +29,7 @@ jobs:
       - name: Executar Bloco 1 - Entrada
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
-          DEST_SPREADSHEET_ID: "1rj2V7CxbZwkan63eCeLkH9G00Gi041IZNC6vwEgq6yI"
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
           ORIGEM_SPREADSHEET_ID: "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
           PYTHONUNBUFFERED: "1"
         run: python -u bloco1_entrada.py
