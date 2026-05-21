@@ -11,7 +11,6 @@ from google.oauth2.service_account import Credentials
 from gspread.exceptions import APIError, WorksheetNotFound
 from gspread.utils import rowcol_to_a1, a1_to_rowcol
 
-
 # =========================================================
 # CONFIGURAÇÕES
 # =========================================================
@@ -19,401 +18,168 @@ LISTA_PLANILHAS_SPREADSHEET_ID = os.getenv(
     "LISTA_PLANILHAS_SPREADSHEET_ID",
     "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig",
 )
-
 ABA_LISTA_PLANILHAS = os.getenv(
     "ABA_LISTA_PLANILHAS",
     "BD_Planilhas",
 )
-
 TIMEZONE = ZoneInfo("America/Sao_Paulo")
-
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
-
-# Tempo para aguardar o Google Sheets calcular as fórmulas antes de congelar.
 CALC_WAIT_SECONDS = int(os.getenv("CALC_WAIT_SECONDS", "15"))
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-
 # =========================================================
 # AUTENTICAÇÃO
 # =========================================================
 def get_gspread_client() -> gspread.Client:
-    """
-    Aceita credencial de duas formas:
-    1) Secret GOOGLE_CREDENTIALS_B64 no GitHub Actions
-    2) Arquivo local service_account.json, para teste local
-    """
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64", "").strip()
-
     if credentials_b64:
         service_account_info = json.loads(base64.b64decode(credentials_b64).decode("utf-8"))
-        credentials = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=SCOPES,
-        )
+        credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
     else:
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
-        credentials = Credentials.from_service_account_file(
-            credentials_path,
-            scopes=SCOPES,
-        )
-
+        credentials = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
     return gspread.authorize(credentials)
-
 
 # =========================================================
 # HELPERS
 # =========================================================
 def executar_com_retry(func, tentativas: int = 5, espera_inicial: float = 2.0):
     ultimo_erro = None
-
     for tentativa in range(1, tentativas + 1):
         try:
             return func()
         except APIError as erro:
             ultimo_erro = erro
-
             if tentativa == tentativas:
                 raise
-
             espera = espera_inicial * tentativa
-            print(
-                f"[AVISO] Erro Google API. "
-                f"Tentativa {tentativa}/{tentativas}. Nova tentativa em {espera:.0f}s."
-            )
+            print(f"[AVISO] Erro Google API. Tentativa {tentativa}/{tentativas}. Nova tentativa em {espera:.0f}s.")
             time.sleep(espera)
-
     raise ultimo_erro
-
 
 def abrir_aba(spreadsheet: gspread.Spreadsheet, nome_aba: str) -> gspread.Worksheet:
     try:
         return spreadsheet.worksheet(nome_aba)
     except WorksheetNotFound as erro:
-        raise RuntimeError(
-            f"A aba '{nome_aba}' não foi encontrada na planilha '{spreadsheet.title}'."
-        ) from erro
-
+        raise RuntimeError(f"A aba '{nome_aba}' não foi encontrada na planilha '{spreadsheet.title}'.") from erro
 
 def is_blank(valor) -> bool:
     return valor is None or valor == ""
 
-
 def as_text(valor) -> str:
     if valor is None:
         return ""
-
     return str(valor)
-
 
 def pad_row(row: list, n_cols: int) -> list:
     row = list(row or [])
-
     if len(row) < n_cols:
         row += [""] * (n_cols - len(row))
-
     return row[:n_cols]
-
 
 def pad_matrix(values: list[list], n_rows: int, n_cols: int) -> list[list]:
     saida = []
-
     for i in range(n_rows):
         row = values[i] if i < len(values) else []
         saida.append(pad_row(row, n_cols))
-
     return saida
 
-
 def dimensoes_range(range_a1: str) -> tuple[int, int, int, int]:
-    """
-    Retorna:
-    linha_inicial, coluna_inicial, qtd_linhas, qtd_colunas
-    """
     if ":" not in range_a1:
         row, col = a1_to_rowcol(range_a1)
         return row, col, 1, 1
-
     inicio, fim = range_a1.split(":")
     row_ini, col_ini = a1_to_rowcol(inicio)
     row_fim, col_fim = a1_to_rowcol(fim)
-
     qtd_linhas = row_fim - row_ini + 1
     qtd_colunas = col_fim - col_ini + 1
-
     return row_ini, col_ini, qtd_linhas, qtd_colunas
 
-
-def ler_range(
-    worksheet: gspread.Worksheet,
-    range_a1: str,
-    n_rows: int | None = None,
-    n_cols: int | None = None,
-) -> list[list]:
-    valores = executar_com_retry(
-        lambda: worksheet.get(
-            range_a1,
-            value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="SERIAL_NUMBER",
-        )
-    )
-
+def ler_range(worksheet: gspread.Worksheet, range_a1: str, n_rows: int | None = None, n_cols: int | None = None) -> list[list]:
+    valores = executar_com_retry(lambda: worksheet.get(range_a1, value_render_option="UNFORMATTED_VALUE", date_time_render_option="SERIAL_NUMBER"))
     if n_rows is None and n_cols is None:
         return valores
-
     if n_rows is None:
         n_rows = len(valores)
-
     if n_cols is None:
         n_cols = max((len(row) for row in valores), default=0)
-
     return pad_matrix(valores, n_rows, n_cols)
-
-
-def ler_coluna(worksheet: gspread.Worksheet, col: int) -> list:
-    valores = executar_com_retry(
-        lambda: worksheet.col_values(
-            col,
-            value_render_option="UNFORMATTED_VALUE",
-        )
-    )
-    return valores
-
-
-def ultima_linha_preenchida_por_coluna(worksheet: gspread.Worksheet, col: int) -> int:
-    valores = ler_coluna(worksheet, col)
-
-    for idx in range(len(valores) - 1, -1, -1):
-        if not is_blank(valores[idx]):
-            return idx + 1
-
-    return 0
-
-
-def ultima_linha_preenchida_da_planilha(
-    worksheet: gspread.Worksheet,
-    range_a1: str = "A:BT",
-) -> int:
-    """
-    Equivalente aproximado ao getLastRow() do Apps Script,
-    considerando o intervalo principal usado no Plan_Principal.
-    """
-    valores = executar_com_retry(
-        lambda: worksheet.get(
-            range_a1,
-            value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="SERIAL_NUMBER",
-        )
-    )
-
-    for idx in range(len(valores) - 1, -1, -1):
-        row = valores[idx]
-        if any(not is_blank(cell) for cell in row):
-            return idx + 1
-
-    return 0
-
 
 def limpar_intervalos(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
     if not ranges:
         return
-
     executar_com_retry(lambda: worksheet.batch_clear(ranges))
-
 
 def escrever_celula(worksheet: gspread.Worksheet, a1: str, valor, raw: bool = True) -> None:
     value_input_option = "RAW" if raw else "USER_ENTERED"
+    executar_com_retry(lambda: worksheet.update(range_name=a1, values=[[valor]], value_input_option=value_input_option))
 
-    executar_com_retry(
-        lambda: worksheet.update(
-            range_name=a1,
-            values=[[valor]],
-            value_input_option=value_input_option,
-        )
-    )
-
-
-def escrever_matriz(
-    worksheet: gspread.Worksheet,
-    start_row: int,
-    start_col: int,
-    values: list[list],
-    raw: bool = True,
-    chunk_size: int = CHUNK_SIZE,
-) -> None:
+def escrever_matriz(worksheet: gspread.Worksheet, start_row: int, start_col: int, values: list[list], raw: bool = True, chunk_size: int = CHUNK_SIZE) -> None:
     if not values:
         return
-
     value_input_option = "RAW" if raw else "USER_ENTERED"
     total_cols = max(len(row) for row in values)
-
     for offset in range(0, len(values), chunk_size):
         bloco = values[offset : offset + chunk_size]
-
         row_ini = start_row + offset
         row_fim = row_ini + len(bloco) - 1
         col_fim = start_col + total_cols - 1
-
         range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
         bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
+        executar_com_retry(lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(range_name=range_a1, values=bloco_padronizado, value_input_option=value_input_option))
 
-        executar_com_retry(
-            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
-                range_name=range_a1,
-                values=bloco_padronizado,
-                value_input_option=value_input_option,
-            )
-        )
-
-
-def escrever_formulas_matriz(
-    worksheet: gspread.Worksheet,
-    start_row: int,
-    start_col: int,
-    formulas: list[list[str]],
-    chunk_size: int = CHUNK_SIZE,
-) -> None:
+def escrever_formulas_matriz(worksheet: gspread.Worksheet, start_row: int, start_col: int, formulas: list[list[str]], chunk_size: int = CHUNK_SIZE) -> None:
     if not formulas:
         return
-
     total_cols = max(len(row) for row in formulas)
-
     for offset in range(0, len(formulas), chunk_size):
         bloco = formulas[offset : offset + chunk_size]
-
         row_ini = start_row + offset
         row_fim = row_ini + len(bloco) - 1
         col_fim = start_col + total_cols - 1
-
         range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
         bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
-
-        executar_com_retry(
-            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
-                range_name=range_a1,
-                values=bloco_padronizado,
-                value_input_option="USER_ENTERED",
-            )
-        )
-
+        executar_com_retry(lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(range_name=range_a1, values=bloco_padronizado, value_input_option="USER_ENTERED"))
 
 def congelar_intervalo(worksheet: gspread.Worksheet, range_a1: str) -> None:
-    """
-    Lê os resultados calculados das fórmulas e cola como valores.
-    """
     row_ini, col_ini, qtd_linhas, qtd_colunas = dimensoes_range(range_a1)
-
-    valores = ler_range(
-        worksheet=worksheet,
-        range_a1=range_a1,
-        n_rows=qtd_linhas,
-        n_cols=qtd_colunas,
-    )
-
-    escrever_matriz(
-        worksheet=worksheet,
-        start_row=row_ini,
-        start_col=col_ini,
-        values=valores,
-        raw=True,
-    )
-
+    valores = ler_range(worksheet=worksheet, range_a1=range_a1, n_rows=qtd_linhas, n_cols=qtd_colunas)
+    escrever_matriz(worksheet=worksheet, start_row=row_ini, start_col=col_ini, values=valores, raw=True)
 
 def formatar_data_hora(worksheet: gspread.Worksheet, range_a1: str) -> None:
     try:
-        executar_com_retry(
-            lambda: worksheet.format(
-                range_a1,
-                {
-                    "numberFormat": {
-                        "type": "DATE_TIME",
-                        "pattern": "dd/MM/yyyy HH:mm:ss",
-                    }
-                },
-            )
-        )
+        executar_com_retry(lambda: worksheet.format(range_a1, {"numberFormat": {"type": "DATE_TIME", "pattern": "dd/MM/yyyy HH:mm:ss"}}))
     except Exception as erro:
         print(f"[AVISO] Não foi possível aplicar formato de data/hora em {range_a1}: {erro}")
 
-
+# =========================================================
+# FORMATAÇÕES FIXAS
+# =========================================================
 def aplicar_formatacoes_fixas_plan_principal(worksheet: gspread.Worksheet) -> None:
-    """
-    Reaplica formatações fixas da aba Plan_Principal da linha 6 até o fim da aba,
-    mesmo em linhas vazias.
-
-    Moeda:
-      AL, AM, AO, AQ, BQ
-
-    Porcentagem:
-      AN, AP, AR
-
-    Duração:
-      BL, BM, BN, BO, BP
-    """
     ultima_linha = max(worksheet.row_count, 1000)
-
     formatos = [
         {
-            "ranges": [
-                f"AL6:AL{ultima_linha}",
-                f"AM6:AM{ultima_linha}",
-                f"AO6:AO{ultima_linha}",
-                f"AQ6:AQ{ultima_linha}",
-                f"BQ6:BQ{ultima_linha}",
-            ],
-            "format": {
-                "numberFormat": {
-                    "type": "CURRENCY",
-                    "pattern": 'R$ #.##0',
-                }
-            },
+            "ranges": [f"AL6:AL{ultima_linha}", f"AM6:AM{ultima_linha}", f"AO6:AO{ultima_linha}", f"AQ6:AQ{ultima_linha}", f"BQ6:BQ{ultima_linha}"],
+            "format": {"numberFormat": {"type": "CURRENCY", "pattern": "R$ #,##0.00"}}
         },
         {
-            "ranges": [
-                f"AN6:AN{ultima_linha}",
-                f"AP6:AP{ultima_linha}",
-                f"AR6:AR{ultima_linha}",
-            ],
-            "format": {
-                "numberFormat": {
-                    "type": "PERCENT",
-                    "pattern": "0%",
-                }
-            },
+            "ranges": [f"AN6:AN{ultima_linha}", f"AP6:AP{ultima_linha}", f"AR6:AR{ultima_linha}"],
+            "format": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}}
         },
         {
-            "ranges": [
-                f"BL6:BL{ultima_linha}",
-                f"BM6:BM{ultima_linha}",
-                f"BN6:BN{ultima_linha}",
-                f"BO6:BO{ultima_linha}",
-                f"BP6:BP{ultima_linha}",
-            ],
-            "format": {
-                "numberFormat": {
-                    "type": "TIME",
-                    "pattern": "[h]:mm:ss",
-                }
-            },
+            "ranges": [f"BL6:BL{ultima_linha}", f"BM6:BM{ultima_linha}", f"BN6:BN{ultima_linha}", f"BO6:BO{ultima_linha}", f"BP6:BP{ultima_linha}"],
+            "format": {"numberFormat": {"type": "TIME", "pattern": "[h]:mm:ss"}}
         },
     ]
-
     for item in formatos:
         for range_a1 in item["ranges"]:
             try:
-                executar_com_retry(
-                    lambda range_a1=range_a1, fmt=item["format"]: worksheet.format(
-                        range_a1,
-                        fmt,
-                    )
-                )
+                executar_com_retry(lambda range_a1=range_a1, fmt=item["format"]: worksheet.format(range_a1, fmt))
             except Exception as erro:
                 print(f"[AVISO] Não foi possível aplicar formatação em {range_a1}: {erro}")
-
     print("Formatações fixas reaplicadas em Plan_Principal.")
 
 
