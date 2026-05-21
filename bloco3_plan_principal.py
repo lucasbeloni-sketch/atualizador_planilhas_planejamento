@@ -340,6 +340,83 @@ def formatar_data_hora(worksheet: gspread.Worksheet, range_a1: str) -> None:
         print(f"[AVISO] Não foi possível aplicar formato de data/hora em {range_a1}: {erro}")
 
 
+def aplicar_formatacoes_fixas_plan_principal(worksheet: gspread.Worksheet) -> None:
+    """
+    Reaplica formatações fixas da aba Plan_Principal da linha 6 até o fim da aba,
+    mesmo em linhas vazias.
+
+    Moeda:
+      AL, AM, AO, AQ, BQ
+
+    Porcentagem:
+      AN, AP, AR
+
+    Duração:
+      BL, BM, BN, BO, BP
+    """
+    ultima_linha = max(worksheet.row_count, 1000)
+
+    formatos = [
+        {
+            "ranges": [
+                f"AL6:AL{ultima_linha}",
+                f"AM6:AM{ultima_linha}",
+                f"AO6:AO{ultima_linha}",
+                f"AQ6:AQ{ultima_linha}",
+                f"BQ6:BQ{ultima_linha}",
+            ],
+            "format": {
+                "numberFormat": {
+                    "type": "CURRENCY",
+                    "pattern": 'R$ #.##0',
+                }
+            },
+        },
+        {
+            "ranges": [
+                f"AN6:AN{ultima_linha}",
+                f"AP6:AP{ultima_linha}",
+                f"AR6:AR{ultima_linha}",
+            ],
+            "format": {
+                "numberFormat": {
+                    "type": "PERCENT",
+                    "pattern": "0%",
+                }
+            },
+        },
+        {
+            "ranges": [
+                f"BL6:BL{ultima_linha}",
+                f"BM6:BM{ultima_linha}",
+                f"BN6:BN{ultima_linha}",
+                f"BO6:BO{ultima_linha}",
+                f"BP6:BP{ultima_linha}",
+            ],
+            "format": {
+                "numberFormat": {
+                    "type": "TIME",
+                    "pattern": "[h]:mm:ss",
+                }
+            },
+        },
+    ]
+
+    for item in formatos:
+        for range_a1 in item["ranges"]:
+            try:
+                executar_com_retry(
+                    lambda range_a1=range_a1, fmt=item["format"]: worksheet.format(
+                        range_a1,
+                        fmt,
+                    )
+                )
+            except Exception as erro:
+                print(f"[AVISO] Não foi possível aplicar formatação em {range_a1}: {erro}")
+
+    print("Formatações fixas reaplicadas em Plan_Principal.")
+
+
 def remover_filtro_basico(spreadsheet: gspread.Spreadsheet, worksheet: gspread.Worksheet) -> None:
     """
     Remove filtro ativo da aba, se houver.
@@ -543,6 +620,7 @@ def executar_bloco3_plan_principal(
     print(f"Última linha preenchida da Plan_Principal: {last_row_sheet}")
 
     if last_row_sheet < 6:
+        aplicar_formatacoes_fixas_plan_principal(aba)
         finalizar_execucao(aba)
         print("Nenhuma linha para atualizar a partir da linha 6.")
         return
@@ -561,7 +639,6 @@ def executar_bloco3_plan_principal(
         ],
     )
 
-    qtd_linhas = last_row_sheet - 5
     linhas = list(range(6, last_row_sheet + 1))
 
     # =====================================================
@@ -686,6 +763,9 @@ def executar_bloco3_plan_principal(
     # AK baseado na última linha preenchida em H
     # =====================================================
     aplicar_ak_por_coluna_h(aba, last_row_sheet)
+
+    # Reaplica as formatações fixas mesmo nas linhas vazias/não atualizadas
+    aplicar_formatacoes_fixas_plan_principal(aba)
 
     finalizar_execucao(aba)
 
