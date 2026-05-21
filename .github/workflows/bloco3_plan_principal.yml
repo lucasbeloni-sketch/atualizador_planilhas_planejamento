@@ -2,8 +2,7 @@ name: Bloco 3 - Plan Principal
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 3,9,15,21 * * *"
+  
 
 concurrency:
   group: bloco3-plan-principal
