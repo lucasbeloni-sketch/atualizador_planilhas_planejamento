@@ -1,0 +1,52 @@
+name: Pipeline B1+B2 - Entrada e Carteira Planejador
+
+on:
+  schedule:
+    - cron: "0 15 * * *"  # 12h horário de Brasília (UTC-3)
+    - cron: "0 23 * * *"  # 20h horário de Brasília (UTC-3)
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-b1-b2-planejamento
+  cancel-in-progress: false
+
+jobs:
+  executar-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # =====================================================
+      # BLOCO 1 - ENTRADA
+      # =====================================================
+      - name: Executar Bloco 1 - Entrada
+        env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          ORIGEM_SPREADSHEET_ID: "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
+          PYTHONUNBUFFERED: "1"
+        run: python -u bloco1_entrada.py
+
+      # =====================================================
+      # BLOCO 2 - CARTEIRA_PLANEJADOR
+      # =====================================================
+      - name: Executar Bloco 2 - Carteira Planejador
+        env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          CALC_WAIT_SECONDS: "15"
+          PYTHONUNBUFFERED: "1"
+        run: python -u bloco2_carteira_planejador.py
