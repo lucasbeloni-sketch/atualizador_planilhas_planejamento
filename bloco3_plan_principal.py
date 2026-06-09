@@ -18,6 +18,7 @@ from common import (
     formatar_data_hora,
     get_gspread_client,
     is_blank,
+    ler_coluna,
     ler_range,
     limpar_intervalos,
 )
@@ -193,14 +194,64 @@ def formula_al(row: int) -> str:
     )
 
 
-def formula_am(row: int) -> str:
-    row_anterior = row - 1
+def _norm_chave(valor):
+    """
+    Normaliza um valor para casar com a semântica do COUNTIFS do Sheets:
+    números comparados por valor (5 == 5.0) e texto case-insensitive.
+    """
+    if isinstance(valor, bool):
+        return valor
 
-    return (
-        f'=IF(B{row}="";"";'
-        f'IF(COUNTIFS($B$1:B{row_anterior};B{row};$G$1:G{row_anterior};G{row})=0;'
-        f'XLOOKUP(G{row}&B{row};BD_Metas!$A:$A;BD_Metas!$D:$D;0);0))'
-    )
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    return as_text(valor).strip().lower()
+
+
+def construir_formulas_am(
+    aba: gspread.Worksheet,
+    linhas: list[int],
+    last_row_sheet: int,
+) -> list[list]:
+    """
+    AM = meta (BD_Metas!D via XLOOKUP por G&B) apenas na PRIMEIRA ocorrência de
+    cada par (B, G) lendo de cima para baixo; nas repetições, 0; com B vazio, "".
+
+    Substitui a fórmula original que usava COUNTIFS sobre intervalo crescente
+    ($B$1:B{row-1}), de custo O(n^2) e principal gargalo do cálculo de AL:AS,
+    por detecção da primeira ocorrência em Python (O(n)). O XLOOKUP em BD_Metas
+    continua sendo feito pelo Sheets, preservando a concatenação G&B original.
+    """
+    col_b = ler_coluna(aba, 2)
+    col_g = ler_coluna(aba, 7)
+
+    def valor(col: list, idx: int):
+        return col[idx] if idx < len(col) else ""
+
+    vistos = set()
+    am_por_linha = {}
+
+    # Percorre desde a linha 1 (o COUNTIFS original considerava $B$1 em diante),
+    # mas só emite fórmula para as linhas de dados (>= 6).
+    for idx in range(last_row_sheet):
+        row = idx + 1
+        b = valor(col_b, idx)
+        g = valor(col_g, idx)
+        chave = (_norm_chave(b), _norm_chave(g))
+
+        if row >= 6:
+            if is_blank(b):
+                am_por_linha[row] = ""
+            elif chave in vistos:
+                am_por_linha[row] = 0
+            else:
+                am_por_linha[row] = (
+                    f'=XLOOKUP(G{row}&B{row};BD_Metas!$A:$A;BD_Metas!$D:$D;0)'
+                )
+
+        vistos.add(chave)
+
+    return [[am_por_linha[row]] for row in linhas]
 
 
 def formula_ao(row: int) -> str:
@@ -328,12 +379,12 @@ def executar_bloco3_plan_principal(
         formulas=[[formula_al(row)] for row in linhas],
     )
 
-    print("Aplicando fórmulas em AM...")
+    print("Aplicando AM (primeira ocorrência de (B,G) calculada em Python)...")
     escrever_formulas_matriz(
         worksheet=aba,
         start_row=6,
         start_col=39,
-        formulas=[[formula_am(row)] for row in linhas],
+        formulas=construir_formulas_am(aba, linhas, last_row_sheet),
     )
 
     print("Aplicando fórmulas em AO...")
