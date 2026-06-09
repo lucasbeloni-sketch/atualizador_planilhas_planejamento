@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pipeline-geral-planejamento
+  # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
+  # planilhas. Impede execuções simultâneas que corromperiam os dados.
+  group: planejamento-sheets-write
   cancel-in-progress: false
 
 jobs:
@@ -44,7 +46,6 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
-          CALC_WAIT_SECONDS: "15"
           PYTHONUNBUFFERED: "1"
         run: python -u bloco2_carteira_planejador.py
 
@@ -55,6 +56,5 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
-          CALC_WAIT_SECONDS: "15"
           PYTHONUNBUFFERED: "1"
         run: python -u bloco3_plan_principal.py

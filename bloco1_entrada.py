@@ -1,112 +1,39 @@
-import base64
-import json
 import os
-import time
 import traceback
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import gspread
-from google.oauth2.service_account import Credentials
-from gspread.exceptions import APIError, WorksheetNotFound
-from gspread.utils import rowcol_to_a1
+
+from common import (
+    LISTA_PLANILHAS_SPREADSHEET_ID,
+    TIMEZONE,
+    abrir_aba,
+    agora_formatado,
+    as_text,
+    buscar_planilhas,
+    escrever_celula,
+    escrever_matriz,
+    executar_com_retry,
+    get_gspread_client,
+    is_blank,
+    ler_range,
+    limpar_intervalos,
+    ultima_linha_preenchida_por_coluna,
+)
 
 
 # =========================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES ESPECÍFICAS DO BLOCO 1
 # =========================================================
-LISTA_PLANILHAS_SPREADSHEET_ID = os.getenv(
-    "LISTA_PLANILHAS_SPREADSHEET_ID",
-    "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig",
-)
-
-ABA_LISTA_PLANILHAS = os.getenv(
-    "ABA_LISTA_PLANILHAS",
-    "BD_Planilhas",
-)
-
 ORIGEM_SPREADSHEET_ID = os.getenv(
     "ORIGEM_SPREADSHEET_ID",
     "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs",
 )
 
-TIMEZONE = ZoneInfo("America/Sao_Paulo")
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
 
 # =========================================================
-# AUTENTICAÇÃO
+# HELPERS ESPECÍFICOS DO BLOCO 1
 # =========================================================
-def get_gspread_client() -> gspread.Client:
-    """
-    Aceita credencial de duas formas:
-    1) Secret GOOGLE_CREDENTIALS_B64 no GitHub Actions
-    2) Arquivo local service_account.json, para teste local
-    """
-    credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64", "").strip()
-
-    if credentials_b64:
-        service_account_info = json.loads(base64.b64decode(credentials_b64).decode("utf-8"))
-        credentials = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=SCOPES,
-        )
-    else:
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
-        credentials = Credentials.from_service_account_file(
-            credentials_path,
-            scopes=SCOPES,
-        )
-
-    return gspread.authorize(credentials)
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-def executar_com_retry(func, tentativas: int = 5, espera_inicial: float = 2.0):
-    ultimo_erro = None
-
-    for tentativa in range(1, tentativas + 1):
-        try:
-            return func()
-        except APIError as erro:
-            ultimo_erro = erro
-
-            if tentativa == tentativas:
-                raise
-
-            espera = espera_inicial * tentativa
-            print(
-                f"[AVISO] Erro Google API. "
-                f"Tentativa {tentativa}/{tentativas}. Nova tentativa em {espera:.0f}s."
-            )
-            time.sleep(espera)
-
-    raise ultimo_erro
-
-
-def abrir_aba(spreadsheet: gspread.Spreadsheet, nome_aba: str) -> gspread.Worksheet:
-    try:
-        return spreadsheet.worksheet(nome_aba)
-    except WorksheetNotFound as erro:
-        raise RuntimeError(
-            f"A aba '{nome_aba}' não foi encontrada na planilha '{spreadsheet.title}'."
-        ) from erro
-
-
-def limpar_intervalos(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
-    if not ranges:
-        return
-
-    executar_com_retry(lambda: worksheet.batch_clear(ranges))
-
-
 def limpar_coluna_preservando_validacao(
     worksheet: gspread.Worksheet,
     col: int,
@@ -133,128 +60,6 @@ def limpar_coluna_preservando_validacao(
     )
 
 
-def escrever_celula(worksheet: gspread.Worksheet, a1: str, valor, raw: bool = True) -> None:
-    value_input_option = "RAW" if raw else "USER_ENTERED"
-
-    executar_com_retry(
-        lambda: worksheet.update(
-            range_name=a1,
-            values=[[valor]],
-            value_input_option=value_input_option,
-        )
-    )
-
-
-def escrever_matriz(
-    worksheet: gspread.Worksheet,
-    start_row: int,
-    start_col: int,
-    values: list[list],
-    raw: bool = True,
-    chunk_size: int = CHUNK_SIZE,
-) -> None:
-    if not values:
-        return
-
-    value_input_option = "RAW" if raw else "USER_ENTERED"
-    total_cols = max(len(row) for row in values)
-
-    for offset in range(0, len(values), chunk_size):
-        bloco = values[offset : offset + chunk_size]
-
-        row_ini = start_row + offset
-        row_fim = row_ini + len(bloco) - 1
-        col_fim = start_col + total_cols - 1
-
-        range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
-
-        bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
-
-        executar_com_retry(
-            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
-                range_name=range_a1,
-                values=bloco_padronizado,
-                value_input_option=value_input_option,
-            )
-        )
-
-
-def ler_range(
-    worksheet: gspread.Worksheet,
-    range_a1: str,
-    n_rows: int | None = None,
-    n_cols: int | None = None,
-) -> list[list]:
-    valores = executar_com_retry(
-        lambda: worksheet.get(
-            range_a1,
-            value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="FORMATTED_STRING",
-        )
-    )
-
-    if n_rows is None and n_cols is None:
-        return valores
-
-    if n_rows is None:
-        n_rows = len(valores)
-
-    if n_cols is None:
-        n_cols = max((len(row) for row in valores), default=0)
-
-    return pad_matrix(valores, n_rows, n_cols)
-
-
-def ler_coluna(worksheet: gspread.Worksheet, col: int) -> list:
-    valores = executar_com_retry(
-        lambda: worksheet.col_values(
-            col,
-            value_render_option="UNFORMATTED_VALUE",
-        )
-    )
-    return valores
-
-
-def ultima_linha_preenchida_por_coluna(worksheet: gspread.Worksheet, col: int) -> int:
-    valores = ler_coluna(worksheet, col)
-
-    for idx in range(len(valores) - 1, -1, -1):
-        if not is_blank(valores[idx]):
-            return idx + 1
-
-    return 0
-
-
-def pad_row(row: list, n_cols: int) -> list:
-    row = list(row or [])
-
-    if len(row) < n_cols:
-        row += [""] * (n_cols - len(row))
-
-    return row[:n_cols]
-
-
-def pad_matrix(values: list[list], n_rows: int, n_cols: int) -> list[list]:
-    saida = []
-
-    for i in range(n_rows):
-        row = values[i] if i < len(values) else []
-        saida.append(pad_row(row, n_cols))
-
-    return saida
-
-
-def is_blank(valor) -> bool:
-    return valor is None or valor == ""
-
-
-def as_text(valor) -> str:
-    if valor is None:
-        return ""
-
-    return str(valor)
-
-
 def is_zero(valor) -> bool:
     if valor == 0:
         return True
@@ -270,6 +75,8 @@ def is_date_like(valor) -> bool:
     """
     Aproxima o comportamento do ISDATE do Google Sheets para as colunas usadas no Bloco 1.
     Considera datas vindas como texto formatado ou serial numérico plausível.
+
+    Faixa de serial 20000..90000 ~ 1954..2146 (datas plausíveis de obra).
     """
     if valor is None or valor == "":
         return False
@@ -337,55 +144,6 @@ def valor_coluna(row: list, col_planilha: int, col_inicial_range: int = 2):
         return ""
 
     return row[idx]
-
-
-def buscar_planilhas(ss_lista: gspread.Spreadsheet) -> list[dict[str, str]]:
-    """
-    Busca os nomes e IDs das planilhas na aba BD_Planilhas.
-    Nome: coluna B, a partir da linha 3.
-    ID: coluna C, a partir da linha 3.
-    Remove vazios e IDs duplicados.
-    """
-    aba_lista = abrir_aba(ss_lista, ABA_LISTA_PLANILHAS)
-
-    ultima_linha = ultima_linha_preenchida_por_coluna(aba_lista, 3)
-
-    if ultima_linha < 3:
-        return []
-
-    valores = ler_range(
-        aba_lista,
-        f"B3:C{ultima_linha}",
-        ultima_linha - 2,
-        2,
-    )
-
-    planilhas = []
-    ids_vistos = set()
-
-    for row in valores:
-        nome_planilha = as_text(row[0]).strip() if len(row) > 0 else ""
-        id_planilha = as_text(row[1]).strip() if len(row) > 1 else ""
-
-        if not id_planilha:
-            continue
-
-        if id_planilha in ids_vistos:
-            continue
-
-        if not nome_planilha:
-            nome_planilha = "Sem nome informado"
-
-        planilhas.append(
-            {
-                "nome": nome_planilha,
-                "id": id_planilha,
-            }
-        )
-
-        ids_vistos.add(id_planilha)
-
-    return planilhas
 
 
 # =========================================================
@@ -709,8 +467,7 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
 
 
 def finalizar_execucao(aba_entrada: gspread.Worksheet) -> None:
-    data_hora = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M:%S")
-    escrever_celula(aba_entrada, "F2", data_hora)
+    escrever_celula(aba_entrada, "F2", agora_formatado())
 
 
 # =========================================================
@@ -757,7 +514,7 @@ def main() -> None:
 
     if not planilhas:
         raise RuntimeError(
-            f"Nenhum ID encontrado em {ABA_LISTA_PLANILHAS}!C3:C "
+            f"Nenhum ID encontrado na aba BD_Planilhas!C3:C "
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
 

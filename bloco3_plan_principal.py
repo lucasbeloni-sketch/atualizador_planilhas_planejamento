@@ -1,199 +1,38 @@
-import base64
-import json
-import os
-import time
 import traceback
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import gspread
-from google.oauth2.service_account import Credentials
-from gspread.exceptions import APIError, WorksheetNotFound
-from gspread.utils import rowcol_to_a1, a1_to_rowcol
 
-
-# =========================================================
-# CONFIGURAÇÕES
-# =========================================================
-LISTA_PLANILHAS_SPREADSHEET_ID = os.getenv(
-    "LISTA_PLANILHAS_SPREADSHEET_ID",
-    "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig",
+from common import (
+    LISTA_PLANILHAS_SPREADSHEET_ID,
+    TIMEZONE,
+    abrir_aba,
+    agora_formatado,
+    aguardar_estabilizacao,
+    as_text,
+    buscar_planilhas,
+    congelar_intervalo,
+    escrever_celula,
+    escrever_formulas_matriz,
+    executar_com_retry,
+    formatar_data_hora,
+    get_gspread_client,
+    is_blank,
+    ler_range,
+    limpar_intervalos,
 )
 
-ABA_LISTA_PLANILHAS = os.getenv(
-    "ABA_LISTA_PLANILHAS",
-    "BD_Planilhas",
-)
 
-TIMEZONE = ZoneInfo("America/Sao_Paulo")
-
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
-
-# Tempo para aguardar o Google Sheets calcular as fórmulas antes de congelar.
-CALC_WAIT_SECONDS = int(os.getenv("CALC_WAIT_SECONDS", "15"))
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+# =========================================================
+# CONFIGURAÇÕES ESPECÍFICAS DO BLOCO 3
+# =========================================================
+# O Plan_Principal lê datas como serial numérico para congelar e reaplicar formato.
+RENDER_SERIAL = "SERIAL_NUMBER"
 
 
 # =========================================================
-# AUTENTICAÇÃO
+# HELPERS ESPECÍFICOS DO BLOCO 3
 # =========================================================
-def get_gspread_client() -> gspread.Client:
-    """
-    Aceita credencial de duas formas:
-    1) Secret GOOGLE_CREDENTIALS_B64 no GitHub Actions
-    2) Arquivo local service_account.json, para teste local
-    """
-    credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64", "").strip()
-
-    if credentials_b64:
-        service_account_info = json.loads(base64.b64decode(credentials_b64).decode("utf-8"))
-        credentials = Credentials.from_service_account_info(
-            service_account_info,
-            scopes=SCOPES,
-        )
-    else:
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
-        credentials = Credentials.from_service_account_file(
-            credentials_path,
-            scopes=SCOPES,
-        )
-
-    return gspread.authorize(credentials)
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-def executar_com_retry(func, tentativas: int = 5, espera_inicial: float = 2.0):
-    ultimo_erro = None
-
-    for tentativa in range(1, tentativas + 1):
-        try:
-            return func()
-        except APIError as erro:
-            ultimo_erro = erro
-
-            if tentativa == tentativas:
-                raise
-
-            espera = espera_inicial * tentativa
-            print(
-                f"[AVISO] Erro Google API. "
-                f"Tentativa {tentativa}/{tentativas}. Nova tentativa em {espera:.0f}s."
-            )
-            time.sleep(espera)
-
-    raise ultimo_erro
-
-
-def abrir_aba(spreadsheet: gspread.Spreadsheet, nome_aba: str) -> gspread.Worksheet:
-    try:
-        return spreadsheet.worksheet(nome_aba)
-    except WorksheetNotFound as erro:
-        raise RuntimeError(
-            f"A aba '{nome_aba}' não foi encontrada na planilha '{spreadsheet.title}'."
-        ) from erro
-
-
-def is_blank(valor) -> bool:
-    return valor is None or valor == ""
-
-
-def as_text(valor) -> str:
-    if valor is None:
-        return ""
-
-    return str(valor)
-
-
-def pad_row(row: list, n_cols: int) -> list:
-    row = list(row or [])
-
-    if len(row) < n_cols:
-        row += [""] * (n_cols - len(row))
-
-    return row[:n_cols]
-
-
-def pad_matrix(values: list[list], n_rows: int, n_cols: int) -> list[list]:
-    saida = []
-
-    for i in range(n_rows):
-        row = values[i] if i < len(values) else []
-        saida.append(pad_row(row, n_cols))
-
-    return saida
-
-
-def dimensoes_range(range_a1: str) -> tuple[int, int, int, int]:
-    """
-    Retorna:
-    linha_inicial, coluna_inicial, qtd_linhas, qtd_colunas
-    """
-    if ":" not in range_a1:
-        row, col = a1_to_rowcol(range_a1)
-        return row, col, 1, 1
-
-    inicio, fim = range_a1.split(":")
-    row_ini, col_ini = a1_to_rowcol(inicio)
-    row_fim, col_fim = a1_to_rowcol(fim)
-
-    qtd_linhas = row_fim - row_ini + 1
-    qtd_colunas = col_fim - col_ini + 1
-
-    return row_ini, col_ini, qtd_linhas, qtd_colunas
-
-
-def ler_range(
-    worksheet: gspread.Worksheet,
-    range_a1: str,
-    n_rows: int | None = None,
-    n_cols: int | None = None,
-) -> list[list]:
-    valores = executar_com_retry(
-        lambda: worksheet.get(
-            range_a1,
-            value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="SERIAL_NUMBER",
-        )
-    )
-
-    if n_rows is None and n_cols is None:
-        return valores
-
-    if n_rows is None:
-        n_rows = len(valores)
-
-    if n_cols is None:
-        n_cols = max((len(row) for row in valores), default=0)
-
-    return pad_matrix(valores, n_rows, n_cols)
-
-
-def ler_coluna(worksheet: gspread.Worksheet, col: int) -> list:
-    valores = executar_com_retry(
-        lambda: worksheet.col_values(
-            col,
-            value_render_option="UNFORMATTED_VALUE",
-        )
-    )
-    return valores
-
-
-def ultima_linha_preenchida_por_coluna(worksheet: gspread.Worksheet, col: int) -> int:
-    valores = ler_coluna(worksheet, col)
-
-    for idx in range(len(valores) - 1, -1, -1):
-        if not is_blank(valores[idx]):
-            return idx + 1
-
-    return 0
-
-
 def ultima_linha_preenchida_da_planilha(
     worksheet: gspread.Worksheet,
     range_a1: str = "A:BT",
@@ -206,7 +45,7 @@ def ultima_linha_preenchida_da_planilha(
         lambda: worksheet.get(
             range_a1,
             value_render_option="UNFORMATTED_VALUE",
-            date_time_render_option="SERIAL_NUMBER",
+            date_time_render_option=RENDER_SERIAL,
         )
     )
 
@@ -216,128 +55,6 @@ def ultima_linha_preenchida_da_planilha(
             return idx + 1
 
     return 0
-
-
-def limpar_intervalos(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
-    if not ranges:
-        return
-
-    executar_com_retry(lambda: worksheet.batch_clear(ranges))
-
-
-def escrever_celula(worksheet: gspread.Worksheet, a1: str, valor, raw: bool = True) -> None:
-    value_input_option = "RAW" if raw else "USER_ENTERED"
-
-    executar_com_retry(
-        lambda: worksheet.update(
-            range_name=a1,
-            values=[[valor]],
-            value_input_option=value_input_option,
-        )
-    )
-
-
-def escrever_matriz(
-    worksheet: gspread.Worksheet,
-    start_row: int,
-    start_col: int,
-    values: list[list],
-    raw: bool = True,
-    chunk_size: int = CHUNK_SIZE,
-) -> None:
-    if not values:
-        return
-
-    value_input_option = "RAW" if raw else "USER_ENTERED"
-    total_cols = max(len(row) for row in values)
-
-    for offset in range(0, len(values), chunk_size):
-        bloco = values[offset : offset + chunk_size]
-
-        row_ini = start_row + offset
-        row_fim = row_ini + len(bloco) - 1
-        col_fim = start_col + total_cols - 1
-
-        range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
-        bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
-
-        executar_com_retry(
-            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
-                range_name=range_a1,
-                values=bloco_padronizado,
-                value_input_option=value_input_option,
-            )
-        )
-
-
-def escrever_formulas_matriz(
-    worksheet: gspread.Worksheet,
-    start_row: int,
-    start_col: int,
-    formulas: list[list[str]],
-    chunk_size: int = CHUNK_SIZE,
-) -> None:
-    if not formulas:
-        return
-
-    total_cols = max(len(row) for row in formulas)
-
-    for offset in range(0, len(formulas), chunk_size):
-        bloco = formulas[offset : offset + chunk_size]
-
-        row_ini = start_row + offset
-        row_fim = row_ini + len(bloco) - 1
-        col_fim = start_col + total_cols - 1
-
-        range_a1 = f"{rowcol_to_a1(row_ini, start_col)}:{rowcol_to_a1(row_fim, col_fim)}"
-        bloco_padronizado = [pad_row(row, total_cols) for row in bloco]
-
-        executar_com_retry(
-            lambda range_a1=range_a1, bloco_padronizado=bloco_padronizado: worksheet.update(
-                range_name=range_a1,
-                values=bloco_padronizado,
-                value_input_option="USER_ENTERED",
-            )
-        )
-
-
-def congelar_intervalo(worksheet: gspread.Worksheet, range_a1: str) -> None:
-    """
-    Lê os resultados calculados das fórmulas e cola como valores.
-    """
-    row_ini, col_ini, qtd_linhas, qtd_colunas = dimensoes_range(range_a1)
-
-    valores = ler_range(
-        worksheet=worksheet,
-        range_a1=range_a1,
-        n_rows=qtd_linhas,
-        n_cols=qtd_colunas,
-    )
-
-    escrever_matriz(
-        worksheet=worksheet,
-        start_row=row_ini,
-        start_col=col_ini,
-        values=valores,
-        raw=True,
-    )
-
-
-def formatar_data_hora(worksheet: gspread.Worksheet, range_a1: str) -> None:
-    try:
-        executar_com_retry(
-            lambda: worksheet.format(
-                range_a1,
-                {
-                    "numberFormat": {
-                        "type": "DATE_TIME",
-                        "pattern": "dd/MM/yyyy HH:mm:ss",
-                    }
-                },
-            )
-        )
-    except Exception as erro:
-        print(f"[AVISO] Não foi possível aplicar formato de data/hora em {range_a1}: {erro}")
 
 
 def aplicar_formatacoes_fixas_plan_principal(worksheet: gspread.Worksheet) -> None:
@@ -444,58 +161,6 @@ def escape_formula_text(texto: str) -> str:
     Escapa aspas duplas para usar texto dentro de fórmula do Google Sheets.
     """
     return as_text(texto).replace('"', '""')
-
-
-def buscar_planilhas(ss_lista: gspread.Spreadsheet) -> list[dict[str, str]]:
-    """
-    Busca os dados das planilhas na aba BD_Planilhas.
-    Nome: coluna B, a partir da linha 3.
-    ID: coluna C, a partir da linha 3.
-    Valor BE: coluna D, a partir da linha 3.
-    Remove IDs vazios e duplicados.
-    """
-    aba_lista = abrir_aba(ss_lista, ABA_LISTA_PLANILHAS)
-
-    ultima_linha = ultima_linha_preenchida_por_coluna(aba_lista, 3)
-
-    if ultima_linha < 3:
-        return []
-
-    valores = ler_range(
-        aba_lista,
-        f"B3:D{ultima_linha}",
-        ultima_linha - 2,
-        3,
-    )
-
-    planilhas = []
-    ids_vistos = set()
-
-    for row in valores:
-        nome_planilha = as_text(row[0]).strip() if len(row) > 0 else ""
-        id_planilha = as_text(row[1]).strip() if len(row) > 1 else ""
-        valor_be = as_text(row[2]).strip() if len(row) > 2 else ""
-
-        if not id_planilha:
-            continue
-
-        if id_planilha in ids_vistos:
-            continue
-
-        if not nome_planilha:
-            nome_planilha = "Sem nome informado"
-
-        planilhas.append(
-            {
-                "nome": nome_planilha,
-                "id": id_planilha,
-                "valor_be": valor_be,
-            }
-        )
-
-        ids_vistos.add(id_planilha)
-
-    return planilhas
 
 
 # =========================================================
@@ -703,8 +368,15 @@ def executar_bloco3_plan_principal(
         formulas=[[formula_be(row, valor_be)] for row in linhas],
     )
 
-    print(f"Aguardando cálculo inicial por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
+    # As derivadas (AN/AP/AR) dividem por AL/AM/AO/AQ; aguarda o bloco inicial
+    # estabilizar antes de aplicá-las.
+    print("Aguardando cálculo inicial em AL:AS...")
+    aguardar_estabilizacao(
+        aba,
+        f"AL6:AS{last_row_sheet}",
+        date_time_render_option=RENDER_SERIAL,
+        descricao="cálculo inicial AL:AS",
+    )
 
     # =====================================================
     # Fórmulas derivadas
@@ -713,25 +385,27 @@ def executar_bloco3_plan_principal(
     # =====================================================
     print("Aplicando fórmulas derivadas em AN, AP e AR...")
 
+    derivadas = [formulas_derivadas_an_ap_ar(row) for row in linhas]
+
     escrever_formulas_matriz(
         worksheet=aba,
         start_row=6,
         start_col=40,
-        formulas=[[formulas_derivadas_an_ap_ar(row)[0]] for row in linhas],
+        formulas=[[d[0]] for d in derivadas],
     )
 
     escrever_formulas_matriz(
         worksheet=aba,
         start_row=6,
         start_col=42,
-        formulas=[[formulas_derivadas_an_ap_ar(row)[1]] for row in linhas],
+        formulas=[[d[1]] for d in derivadas],
     )
 
     escrever_formulas_matriz(
         worksheet=aba,
         start_row=6,
         start_col=44,
-        formulas=[[formulas_derivadas_an_ap_ar(row)[2]] for row in linhas],
+        formulas=[[d[2]] for d in derivadas],
     )
 
     print("Aplicando fórmulas em BR:BT...")
@@ -742,22 +416,20 @@ def executar_bloco3_plan_principal(
         formulas=[formulas_br_bt(row) for row in linhas],
     )
 
-    print(f"Aguardando cálculo das derivadas por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
-
     # =====================================================
     # Congelar valores
     # AL:AS, J:L, BR:BT
     # BE fica como fórmula, igual ao Apps Script original.
+    # Cada congelar_intervalo aguarda o cálculo estabilizar antes de ler.
     # =====================================================
     print("Congelando valores em AL:AS...")
-    congelar_intervalo(aba, f"AL6:AS{last_row_sheet}")
+    congelar_intervalo(aba, f"AL6:AS{last_row_sheet}", date_time_render_option=RENDER_SERIAL)
 
     print("Congelando valores em J:L...")
-    congelar_intervalo(aba, f"J6:L{last_row_sheet}")
+    congelar_intervalo(aba, f"J6:L{last_row_sheet}", date_time_render_option=RENDER_SERIAL)
 
     print("Congelando valores em BR:BT...")
-    congelar_intervalo(aba, f"BR6:BT{last_row_sheet}")
+    congelar_intervalo(aba, f"BR6:BT{last_row_sheet}", date_time_render_option=RENDER_SERIAL)
 
     # =====================================================
     # AK baseado na última linha preenchida em H
@@ -787,6 +459,7 @@ def aplicar_ak_por_coluna_h(
         range_a1=f"H6:H{last_row_sheet}",
         n_rows=num_rows,
         n_cols=1,
+        date_time_render_option=RENDER_SERIAL,
     )
 
     last_row_h = 5
@@ -817,19 +490,15 @@ def aplicar_ak_por_coluna_h(
         formulas=[[formula_ak(row)] for row in linhas_ak],
     )
 
-    print(f"Aguardando cálculo de AK por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
-
-    print("Congelando valores em AK...")
-    congelar_intervalo(aba, f"AK6:AK{last_row_h}")
+    print("Aguardando cálculo e congelando valores em AK...")
+    congelar_intervalo(aba, f"AK6:AK{last_row_h}", date_time_render_option=RENDER_SERIAL)
 
     if last_row_h < last_row_sheet:
         limpar_intervalos(aba, [f"AK{last_row_h + 1}:AK"])
 
 
 def finalizar_execucao(worksheet: gspread.Worksheet) -> None:
-    data_hora = datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M:%S")
-    escrever_celula(worksheet, "F3", data_hora, raw=False)
+    escrever_celula(worksheet, "F3", agora_formatado(), raw=False)
     formatar_data_hora(worksheet, "F3")
 
 
@@ -878,7 +547,7 @@ def main() -> None:
 
     if not planilhas:
         raise RuntimeError(
-            f"Nenhum ID encontrado em {ABA_LISTA_PLANILHAS}!C3:C "
+            f"Nenhum ID encontrado na aba BD_Planilhas!C3:C "
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
 

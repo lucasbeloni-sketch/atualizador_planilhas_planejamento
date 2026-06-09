@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: bloco1-entrada
+  # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
+  # planilhas. Impede execuções simultâneas que corromperiam os dados.
+  group: planejamento-sheets-write
   cancel-in-progress: false
 
 jobs:
