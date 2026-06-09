@@ -7,7 +7,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pipeline-b1-b2-planejamento
+  # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
+  # planilhas. Impede execuções simultâneas que corromperiam os dados.
+  group: planejamento-sheets-write
   cancel-in-progress: false
 
 jobs:

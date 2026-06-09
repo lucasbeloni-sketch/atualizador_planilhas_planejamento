@@ -5,7 +5,9 @@ on:
   
 
 concurrency:
-  group: bloco3-plan-principal
+  # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
+  # planilhas. Impede execuções simultâneas que corromperiam os dados.
+  group: planejamento-sheets-write
   cancel-in-progress: false
 
 jobs:

@@ -1,0 +1,18 @@
+# Credenciais — NUNCA versionar
+service_account.json
+*.json.b64
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
