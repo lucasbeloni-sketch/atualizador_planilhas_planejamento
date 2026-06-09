@@ -1,5 +1,3 @@
-import os
-import time
 import traceback
 from datetime import datetime
 
@@ -10,6 +8,7 @@ from common import (
     TIMEZONE,
     abrir_aba,
     agora_formatado,
+    aguardar_estabilizacao,
     as_text,
     buscar_planilhas,
     congelar_intervalo,
@@ -27,9 +26,6 @@ from common import (
 # =========================================================
 # CONFIGURAÇÕES ESPECÍFICAS DO BLOCO 3
 # =========================================================
-# Tempo para aguardar o Google Sheets calcular as fórmulas antes de congelar.
-CALC_WAIT_SECONDS = int(os.getenv("CALC_WAIT_SECONDS", "15"))
-
 # O Plan_Principal lê datas como serial numérico para congelar e reaplicar formato.
 RENDER_SERIAL = "SERIAL_NUMBER"
 
@@ -372,8 +368,15 @@ def executar_bloco3_plan_principal(
         formulas=[[formula_be(row, valor_be)] for row in linhas],
     )
 
-    print(f"Aguardando cálculo inicial por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
+    # As derivadas (AN/AP/AR) dividem por AL/AM/AO/AQ; aguarda o bloco inicial
+    # estabilizar antes de aplicá-las.
+    print("Aguardando cálculo inicial em AL:AS...")
+    aguardar_estabilizacao(
+        aba,
+        f"AL6:AS{last_row_sheet}",
+        date_time_render_option=RENDER_SERIAL,
+        descricao="cálculo inicial AL:AS",
+    )
 
     # =====================================================
     # Fórmulas derivadas
@@ -413,13 +416,11 @@ def executar_bloco3_plan_principal(
         formulas=[formulas_br_bt(row) for row in linhas],
     )
 
-    print(f"Aguardando cálculo das derivadas por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
-
     # =====================================================
     # Congelar valores
     # AL:AS, J:L, BR:BT
     # BE fica como fórmula, igual ao Apps Script original.
+    # Cada congelar_intervalo aguarda o cálculo estabilizar antes de ler.
     # =====================================================
     print("Congelando valores em AL:AS...")
     congelar_intervalo(aba, f"AL6:AS{last_row_sheet}", date_time_render_option=RENDER_SERIAL)
@@ -489,10 +490,7 @@ def aplicar_ak_por_coluna_h(
         formulas=[[formula_ak(row)] for row in linhas_ak],
     )
 
-    print(f"Aguardando cálculo de AK por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
-
-    print("Congelando valores em AK...")
+    print("Aguardando cálculo e congelando valores em AK...")
     congelar_intervalo(aba, f"AK6:AK{last_row_h}", date_time_render_option=RENDER_SERIAL)
 
     if last_row_h < last_row_sheet:

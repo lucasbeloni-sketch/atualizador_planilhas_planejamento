@@ -37,6 +37,11 @@ TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
 
+# Espera adaptativa pelo cálculo de fórmulas (substitui sleep fixo).
+# Em vez de dormir um tempo fixo, lê o range até os valores estabilizarem.
+CALC_TIMEOUT_SECONDS = int(os.getenv("CALC_TIMEOUT_SECONDS", "180"))
+CALC_POLL_SECONDS = float(os.getenv("CALC_POLL_SECONDS", "3"))
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -330,23 +335,112 @@ def escrever_formulas_matriz(
         )
 
 
+_MARCADORES_CARREGANDO = ("loading", "carregando")
+
+
+def _contem_carregando(valores: list[list]) -> bool:
+    """True se alguma célula ainda exibe 'Loading...'/'Carregando...' (fórmula calculando)."""
+    for row in valores:
+        for cell in row:
+            if isinstance(cell, str):
+                texto = cell.strip().lower()
+                if any(marcador in texto for marcador in _MARCADORES_CARREGANDO):
+                    return True
+
+    return False
+
+
+def aguardar_estabilizacao(
+    worksheet: gspread.Worksheet,
+    range_a1: str,
+    date_time_render_option: str = "FORMATTED_STRING",
+    timeout: float | None = None,
+    intervalo: float | None = None,
+    descricao: str = "",
+) -> list[list]:
+    """
+    Lê o range repetidamente até os valores pararem de mudar entre duas leituras
+    consecutivas (e sem células em 'Loading'/'Carregando'), ou até o timeout.
+
+    Substitui as esperas fixas por time.sleep: não congela cedo demais (cálculo
+    inacabado) nem tarde demais (espera ociosa). Retorna os últimos valores lidos.
+    """
+    if timeout is None:
+        timeout = CALC_TIMEOUT_SECONDS
+
+    if intervalo is None:
+        intervalo = CALC_POLL_SECONDS
+
+    qtd_linhas, qtd_colunas = dimensoes_range(range_a1)[2:]
+    rotulo = descricao or range_a1
+
+    anterior = None
+    inicio = time.monotonic()
+    tentativa = 0
+
+    while True:
+        valores = ler_range(
+            worksheet=worksheet,
+            range_a1=range_a1,
+            n_rows=qtd_linhas,
+            n_cols=qtd_colunas,
+            date_time_render_option=date_time_render_option,
+        )
+        tentativa += 1
+
+        estavel = (
+            not _contem_carregando(valores)
+            and anterior is not None
+            and valores == anterior
+        )
+
+        if estavel:
+            print(
+                f"[CALC] {rotulo}: estável após {tentativa} leituras "
+                f"({time.monotonic() - inicio:.0f}s)."
+            )
+            return valores
+
+        if time.monotonic() - inicio >= timeout:
+            print(
+                f"[AVISO] {rotulo}: timeout de {timeout:.0f}s aguardando cálculo. "
+                f"Usando os últimos valores lidos."
+            )
+            return valores
+
+        anterior = valores
+        time.sleep(intervalo)
+
+
 def congelar_intervalo(
     worksheet: gspread.Worksheet,
     range_a1: str,
     date_time_render_option: str = "FORMATTED_STRING",
+    aguardar: bool = True,
 ) -> None:
     """
-    Lê os resultados calculados das fórmulas e cola como valores.
+    Congela as fórmulas como valores.
+
+    Por padrão aguarda o cálculo estabilizar antes de ler (aguardar=True),
+    garantindo que não congela valores parciais.
     """
     row_ini, col_ini, qtd_linhas, qtd_colunas = dimensoes_range(range_a1)
 
-    valores = ler_range(
-        worksheet=worksheet,
-        range_a1=range_a1,
-        n_rows=qtd_linhas,
-        n_cols=qtd_colunas,
-        date_time_render_option=date_time_render_option,
-    )
+    if aguardar:
+        valores = aguardar_estabilizacao(
+            worksheet=worksheet,
+            range_a1=range_a1,
+            date_time_render_option=date_time_render_option,
+            descricao=f"congelar {range_a1}",
+        )
+    else:
+        valores = ler_range(
+            worksheet=worksheet,
+            range_a1=range_a1,
+            n_rows=qtd_linhas,
+            n_cols=qtd_colunas,
+            date_time_render_option=date_time_render_option,
+        )
 
     escrever_matriz(
         worksheet=worksheet,

@@ -1,5 +1,3 @@
-import os
-import time
 import traceback
 from datetime import datetime
 
@@ -20,14 +18,6 @@ from common import (
     ultima_linha_preenchida_por_coluna,
 )
 from gspread.utils import rowcol_to_a1
-
-
-# =========================================================
-# CONFIGURAÇÕES ESPECÍFICAS DO BLOCO 2
-# =========================================================
-# Tempo de espera para o Google Sheets calcular as fórmulas antes de congelar.
-# Se alguma fórmula for mais pesada, pode aumentar no workflow via env.
-CALC_WAIT_SECONDS = int(os.getenv("CALC_WAIT_SECONDS", "15"))
 
 
 # =========================================================
@@ -108,10 +98,8 @@ def copiar_calcular_e_congelar(
         dest_end_row=dest_end_row,
     )
 
-    print(f"Aguardando cálculo das fórmulas em {nome_bloco} por {CALC_WAIT_SECONDS}s...")
-    time.sleep(CALC_WAIT_SECONDS)
-
-    print(f"Congelando valores em {nome_bloco}: {range_destino}")
+    # congelar_intervalo aguarda o cálculo estabilizar antes de ler/congelar.
+    print(f"Aguardando cálculo e congelando {nome_bloco}: {range_destino}")
     congelar_intervalo(worksheet, range_destino)
 
 

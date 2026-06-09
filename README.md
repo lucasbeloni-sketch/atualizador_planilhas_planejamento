@@ -32,7 +32,8 @@ Variáveis de ambiente opcionais:
 | `LISTA_PLANILHAS_SPREADSHEET_ID` | (id fixo no código) | Planilha com a aba `BD_Planilhas`. |
 | `ORIGEM_SPREADSHEET_ID` | (id fixo no código) | Origem dos dados (só Bloco 1). |
 | `CHUNK_SIZE` | `5000` | Linhas por requisição de escrita. |
-| `CALC_WAIT_SECONDS` | `15` | Espera para o Sheets calcular fórmulas (Blocos 2 e 3). |
+| `CALC_TIMEOUT_SECONDS` | `180` | Tempo máximo aguardando o cálculo das fórmulas estabilizar (Blocos 2 e 3). |
+| `CALC_POLL_SECONDS` | `3` | Intervalo entre leituras ao aguardar o cálculo. |
 
 ## Rodar local
 
