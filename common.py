@@ -335,17 +335,22 @@ def escrever_formulas_matriz(
         )
 
 
-_MARCADORES_CARREGANDO = ("loading", "carregando")
+# Sentinelas EXATAS que o Sheets coloca numa célula cuja fórmula ainda calcula
+# (ex.: IMPORTRANGE). A comparação é de igualdade, não de substring: a coluna AS
+# do Plan_Principal recebe anotações de campo dos técnicos (XLOOKUP em
+# BD_Serv_GPM), e textos como "DESCARREGANDO O CAMINHAO" ou "CAMERA CARREGANDO A
+# NOITE" contêm "carregando" como subpalavra. Com substring-match isso fazia
+# aguardar_estabilizacao nunca convergir e estourar o timeout (confirmado: as
+# planilhas que travavam eram exatamente as que tinham esse texto em AS).
+_SENTINELAS_CARREGANDO = ("loading...", "carregando...")
 
 
 def _contem_carregando(valores: list[list]) -> bool:
-    """True se alguma célula ainda exibe 'Loading...'/'Carregando...' (fórmula calculando)."""
+    """True se alguma célula é exatamente a sentinela de 'calculando' do Sheets."""
     for row in valores:
         for cell in row:
-            if isinstance(cell, str):
-                texto = cell.strip().lower()
-                if any(marcador in texto for marcador in _MARCADORES_CARREGANDO):
-                    return True
+            if isinstance(cell, str) and cell.strip().lower() in _SENTINELAS_CARREGANDO:
+                return True
 
     return False
 
