@@ -1,19 +1,18 @@
-name: Bloco 3 - Plan Principal
+name: Diagnostico Estabilizacao (read-only)
 
 on:
   workflow_dispatch:
-  
 
+# Grupo separado do de escrita: este job só LÊ, não corrompe dados e não
+# precisa esperar a fila de escrita.
 concurrency:
-  # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
-  # planilhas. Impede execuções simultâneas que corromperiam os dados.
-  group: planejamento-sheets-write
+  group: planejamento-sheets-diagnostico
   cancel-in-progress: false
 
 jobs:
-  executar:
+  diagnosticar:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
 
     steps:
       - name: Baixar repositório
@@ -29,11 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Executar Bloco 3 - Plan Principal
+      - name: Rodar diagnóstico (somente leitura)
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
-          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
-          # Plan_Principal pode ter planilhas grandes; dá folga para o cálculo.
-          CALC_TIMEOUT_SECONDS: "600"
           PYTHONUNBUFFERED: "1"
-        run: python -u bloco3_plan_principal.py
+        run: python -u diagnostico_estabilizacao.py
