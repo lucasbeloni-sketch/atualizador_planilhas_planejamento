@@ -98,7 +98,7 @@ def _retry_after_segundos(erro) -> float | None:
 
 def executar_com_retry(
     func,
-    tentativas: int = 5,
+    tentativas: int = 7,
     espera_inicial: float = 2.0,
     espera_maxima: float = 60.0,
 ):
@@ -107,6 +107,10 @@ def executar_com_retry(
 
     Backoff exponencial com jitter, respeitando o header Retry-After
     quando o Google o envia (rate limit 429 / indisponibilidade 503).
+
+    A quota 429 do Sheets é "por minuto por usuário": com 7 tentativas as
+    esperas somam ~2+4+8+16+32+60 = 122s, cobrindo a janela de reset de 1 min.
+    Com 5 tentativas somavam só ~30s e o 429 voltava antes da quota recuperar.
     """
     ultimo_erro = None
 

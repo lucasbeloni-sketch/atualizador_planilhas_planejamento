@@ -147,40 +147,152 @@ def valor_coluna(row: list, col_planilha: int, col_inicial_range: int = 2):
 
 
 # =========================================================
+# CACHE DA ORIGEM (lida 1x, reusada em todas as planilhas)
+# =========================================================
+def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
+    """
+    Lê a planilha de origem UMA vez e devolve as matrizes já transformadas.
+
+    A origem é idêntica para todos os destinos, então tanto a saída do
+    Cart_Validador (G+AS) quanto a matriz C:AW da Carteira são iguais em todas
+    as planilhas. Calcular aqui uma única vez evita reler a origem 10x e foi o
+    que estourava a quota "Read requests per minute per user" do Sheets (429).
+    """
+    print("Preparando dados da origem (leitura única)...")
+
+    # --- Cart_Validador: G + AS de Carteira_Validações ---
+    aba_validacoes_orig = abrir_aba(ss_orig, "Carteira_Validações")
+    ultima_linha_as = ultima_linha_preenchida_por_coluna(aba_validacoes_orig, 45)
+
+    saida_validador = []
+
+    if ultima_linha_as == 0:
+        print("[origem] Carteira_Validações sem dados na coluna AS.")
+    else:
+        col_g = ler_range(aba_validacoes_orig, f"G1:G{ultima_linha_as}", ultima_linha_as, 1)
+        col_as = ler_range(aba_validacoes_orig, f"AS1:AS{ultima_linha_as}", ultima_linha_as, 1)
+
+        for i in range(ultima_linha_as):
+            saida_validador.append(
+                [
+                    col_g[i][0] if i < len(col_g) else "",
+                    col_as[i][0] if i < len(col_as) else "",
+                ]
+            )
+
+    # --- Carteira: matriz C:AW a partir dos blocos da origem ---
+    aba_carteira_orig = abrir_aba(ss_orig, "Carteira")
+    start_row = 5
+    last_src = ultima_linha_preenchida_por_coluna(aba_carteira_orig, 1)
+    num_rows = max(0, last_src - (start_row - 1))
+
+    saida_c_aw = []
+
+    if num_rows == 0:
+        print("[origem] Nenhum dado encontrado na Carteira a partir da linha 5.")
+    else:
+        blk_a_ad = ler_range(aba_carteira_orig, f"A{start_row}:AD{last_src}", num_rows, 30)
+        blk_aj_ak = ler_range(aba_carteira_orig, f"AJ{start_row}:AK{last_src}", num_rows, 2)
+        blk_aw_ax = ler_range(aba_carteira_orig, f"AW{start_row}:AX{last_src}", num_rows, 2)
+        blk_ca_cf = ler_range(aba_carteira_orig, f"CA{start_row}:CF{last_src}", num_rows, 6)
+        blk_bq_cy = ler_range(aba_carteira_orig, f"BQ{start_row}:CY{last_src}", num_rows, 35)
+        blk_cg_ch = ler_range(aba_carteira_orig, f"CG{start_row}:CH{last_src}", num_rows, 2)
+
+        for i in range(num_rows):
+            row = [""] * 47
+
+            r_a = blk_a_ad[i]
+            r_aj = blk_aj_ak[i]
+            r_aw = blk_aw_ax[i]
+            r_ca = blk_ca_cf[i]
+            r_bq = blk_bq_cy[i]
+            r_cg = blk_cg_ch[i]
+
+            # C = A
+            row[0] = r_a[0]
+
+            # D = U
+            row[1] = r_a[20]
+
+            # E:G = C:E
+            row[2] = r_a[2]
+            row[3] = r_a[3]
+            row[4] = r_a[4]
+
+            # H:N = N:T
+            for k in range(7):
+                row[5 + k] = r_a[13 + k]
+
+            # O:W = V:AD
+            for k in range(9):
+                row[12 + k] = r_a[21 + k]
+
+            # X:Y = AJ:AK
+            row[21] = r_aj[0]
+            row[22] = r_aj[1]
+
+            # Z = CA, AB = CC, AC = CF, AF = CE
+            row[23] = r_ca[0]
+            row[25] = r_ca[2]
+            row[26] = r_ca[5]
+            row[29] = r_ca[4]
+
+            # AA = BQ
+            row[24] = r_bq[0]
+
+            # AD:AE = AW:AX
+            row[27] = r_aw[0]
+            row[28] = r_aw[1]
+
+            # AG:AM = CQ:CW
+            for k in range(7):
+                row[30 + k] = r_bq[26 + k]
+
+            # AN:AR = BR:BV
+            row[37] = r_bq[1]
+            row[38] = r_bq[2]
+            row[39] = r_bq[3]
+            row[40] = r_bq[4]
+            row[41] = r_bq[5]
+
+            # AS:AT = CX:CY
+            row[42] = r_bq[33]
+            row[43] = r_bq[34]
+
+            # AU:AV = CG:CH
+            row[44] = r_cg[0]
+            row[45] = r_cg[1]
+
+            saida_c_aw.append(row)
+
+    return {
+        "saida_validador": saida_validador,
+        "saida_c_aw": saida_c_aw,
+        "num_rows": num_rows,
+    }
+
+
+# =========================================================
 # BLOCO 1.1 - atualizarCart_Validador
 # =========================================================
 def atualizar_cart_validador(
     ss_dest: gspread.Spreadsheet,
-    ss_orig: gspread.Spreadsheet,
+    dados_origem: dict,
 ) -> None:
     print("[1/3] Atualizando Cart_Validador...")
 
     aba_entrada = abrir_aba(ss_dest, "Entrada")
     aba_cart_validador_dest = abrir_aba(ss_dest, "Cart_Validador")
-    aba_validacoes_orig = abrir_aba(ss_orig, "Carteira_Validações")
 
     escrever_celula(aba_entrada, "F2", "Etapa 1 de 3")
 
     limpar_intervalos(aba_cart_validador_dest, ["A1:B"])
 
-    ultima_linha_as = ultima_linha_preenchida_por_coluna(aba_validacoes_orig, 45)
+    saida = dados_origem["saida_validador"]
 
-    if ultima_linha_as == 0:
-        print("[1/3] Carteira_Validações sem dados na coluna AS. Cart_Validador ficou vazio.")
+    if not saida:
+        print("[1/3] Origem sem dados. Cart_Validador ficou vazio.")
         return
-
-    col_g = ler_range(aba_validacoes_orig, f"G1:G{ultima_linha_as}", ultima_linha_as, 1)
-    col_as = ler_range(aba_validacoes_orig, f"AS1:AS{ultima_linha_as}", ultima_linha_as, 1)
-
-    saida = []
-
-    for i in range(ultima_linha_as):
-        saida.append(
-            [
-                col_g[i][0] if i < len(col_g) else "",
-                col_as[i][0] if i < len(col_as) else "",
-            ]
-        )
 
     escrever_matriz(aba_cart_validador_dest, 1, 1, saida)
 
@@ -192,101 +304,23 @@ def atualizar_cart_validador(
 # =========================================================
 def atualizar_carteira(
     ss_dest: gspread.Spreadsheet,
-    ss_orig: gspread.Spreadsheet,
+    dados_origem: dict,
 ) -> None:
     print("[2/3] Atualizando Carteira...")
 
     aba_entrada = abrir_aba(ss_dest, "Entrada")
     aba_carteira_dest = abrir_aba(ss_dest, "Carteira")
-    aba_carteira_orig = abrir_aba(ss_orig, "Carteira")
 
     escrever_celula(aba_entrada, "F2", "Etapa 2 de 3")
 
-    start_row = 5
-    last_src = ultima_linha_preenchida_por_coluna(aba_carteira_orig, 1)
-    num_rows = max(0, last_src - (start_row - 1))
+    num_rows = dados_origem["num_rows"]
+    saida_c_aw = dados_origem["saida_c_aw"]
 
     limpar_intervalos(aba_carteira_dest, ["C1:AW", "B2:B"])
 
     if num_rows == 0:
         print("[2/3] Nenhum dado encontrado na origem a partir da linha 5.")
         return
-
-    blk_a_ad = ler_range(aba_carteira_orig, f"A{start_row}:AD{last_src}", num_rows, 30)
-    blk_aj_ak = ler_range(aba_carteira_orig, f"AJ{start_row}:AK{last_src}", num_rows, 2)
-    blk_aw_ax = ler_range(aba_carteira_orig, f"AW{start_row}:AX{last_src}", num_rows, 2)
-    blk_ca_cf = ler_range(aba_carteira_orig, f"CA{start_row}:CF{last_src}", num_rows, 6)
-    blk_bq_cy = ler_range(aba_carteira_orig, f"BQ{start_row}:CY{last_src}", num_rows, 35)
-    blk_cg_ch = ler_range(aba_carteira_orig, f"CG{start_row}:CH{last_src}", num_rows, 2)
-
-    saida_c_aw = []
-
-    for i in range(num_rows):
-        row = [""] * 47
-
-        r_a = blk_a_ad[i]
-        r_aj = blk_aj_ak[i]
-        r_aw = blk_aw_ax[i]
-        r_ca = blk_ca_cf[i]
-        r_bq = blk_bq_cy[i]
-        r_cg = blk_cg_ch[i]
-
-        # C = A
-        row[0] = r_a[0]
-
-        # D = U
-        row[1] = r_a[20]
-
-        # E:G = C:E
-        row[2] = r_a[2]
-        row[3] = r_a[3]
-        row[4] = r_a[4]
-
-        # H:N = N:T
-        for k in range(7):
-            row[5 + k] = r_a[13 + k]
-
-        # O:W = V:AD
-        for k in range(9):
-            row[12 + k] = r_a[21 + k]
-
-        # X:Y = AJ:AK
-        row[21] = r_aj[0]
-        row[22] = r_aj[1]
-
-        # Z = CA, AB = CC, AC = CF, AF = CE
-        row[23] = r_ca[0]
-        row[25] = r_ca[2]
-        row[26] = r_ca[5]
-        row[29] = r_ca[4]
-
-        # AA = BQ
-        row[24] = r_bq[0]
-
-        # AD:AE = AW:AX
-        row[27] = r_aw[0]
-        row[28] = r_aw[1]
-
-        # AG:AM = CQ:CW
-        for k in range(7):
-            row[30 + k] = r_bq[26 + k]
-
-        # AN:AR = BR:BV
-        row[37] = r_bq[1]
-        row[38] = r_bq[2]
-        row[39] = r_bq[3]
-        row[40] = r_bq[4]
-        row[41] = r_bq[5]
-
-        # AS:AT = CX:CY
-        row[42] = r_bq[33]
-        row[43] = r_bq[34]
-
-        # AU:AV = CG:CH
-        row[44] = r_cg[0]
-        row[45] = r_cg[1]
-
-        saida_c_aw.append(row)
 
     escrever_matriz(aba_carteira_dest, 1, 3, saida_c_aw)
 
@@ -475,7 +509,7 @@ def finalizar_execucao(aba_entrada: gspread.Worksheet) -> None:
 # =========================================================
 def executar_bloco1_para_planilha(
     client: gspread.Client,
-    ss_orig: gspread.Spreadsheet,
+    dados_origem: dict,
     dest_spreadsheet_id: str,
     nome_planilha: str,
     indice: int,
@@ -490,8 +524,8 @@ def executar_bloco1_para_planilha(
 
     ss_dest = executar_com_retry(lambda: client.open_by_key(dest_spreadsheet_id))
 
-    atualizar_cart_validador(ss_dest, ss_orig)
-    atualizar_carteira(ss_dest, ss_orig)
+    atualizar_cart_validador(ss_dest, dados_origem)
+    atualizar_carteira(ss_dest, dados_origem)
     atualizar_entrada_nova(ss_dest)
 
     print(f"[OK] Planilha concluída: {nome_planilha} | {dest_spreadsheet_id}")
@@ -520,6 +554,9 @@ def main() -> None:
 
     print(f"Total de planilhas encontradas: {len(planilhas)}")
 
+    # Lê a origem uma única vez; reusada em todas as planilhas (evita 429).
+    dados_origem = preparar_dados_origem(ss_orig)
+
     sucessos = []
     erros = []
 
@@ -530,7 +567,7 @@ def main() -> None:
         try:
             executar_bloco1_para_planilha(
                 client=client,
-                ss_orig=ss_orig,
+                dados_origem=dados_origem,
                 dest_spreadsheet_id=dest_spreadsheet_id,
                 nome_planilha=nome_planilha,
                 indice=indice,
