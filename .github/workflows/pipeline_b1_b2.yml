@@ -1,9 +1,6 @@
 name: Pipeline B1+B2 - Entrada e Carteira Planejador
 
 on:
-  schedule:
-    - cron: "0 15 * * *"  # 12h horário de Brasília (UTC-3)
-    - cron: "0 23 * * *"  # 20h horário de Brasília (UTC-3)
   workflow_dispatch:
 
 concurrency:
