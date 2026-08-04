@@ -129,7 +129,7 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
         worksheet,
         [
             f"B6:G{last_row}",
-            f"P6:P{last_row}",
+            f"N6:P{last_row}",
             f"S6:AF{last_row}",
             f"AI6:AJ{last_row}",
             f"AM6:AV{last_row}",
@@ -141,7 +141,7 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
     # =====================================================
     # Parte 1
     # B1:G1 -> B6:GlastRow
-    # P1:P1 -> P6:PlastRow
+    # N1:P1 -> N6:PlastRow
     # =====================================================
     print("Executando lógica Parte 1...")
 
@@ -158,11 +158,11 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
     copiar_calcular_e_congelar(
         spreadsheet=ss_dest,
         worksheet=worksheet,
-        source_start_col=16,
+        source_start_col=14,
         source_end_col=16,
         dest_start_row=6,
         dest_end_row=last_row,
-        nome_bloco="P:P",
+        nome_bloco="N:P",
     )
 
     # =====================================================
