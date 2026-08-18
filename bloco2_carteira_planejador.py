@@ -30,10 +30,14 @@ from gspread.utils import rowcol_to_a1
 # são afetados por essa opção, então vale para todos os ranges congelados.
 RENDER_SERIAL = "SERIAL_NUMBER"
 
-# Colunas que a análise das planilhas mostrou serem de data. Precisam de formato
-# de data porque agora recebem serial: sem isso apareceria 45627 em vez de
-# 01/12/2024. As colunas de moeda (AI, AJ, AL, AM, AO, AP) ficam de fora.
-COLUNAS_DATA = ["G", "AS", "AT", "AY"]
+# Colunas de data desta aba. Precisam de formato de data porque recebem serial:
+# sem isso apareceria 45627 em vez de 01/12/2024.
+#
+# As colunas de moeda (AI, AJ, AL, AM, AO, AP) ficam de fora de propósito.
+# Cuidado: as listas de formato do Bloco 3 (moeda AL/AM/AO/AQ/BQ, percentual
+# AN/AP/AR) são do Plan_Principal. Mesmas letras, outra aba, outro significado,
+# e não servem pra classificar as colunas daqui.
+COLUNAS_DATA = ["G", "AS", "AT", "AX", "AY"]
 
 
 # =========================================================
