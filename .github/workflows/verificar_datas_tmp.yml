@@ -33,6 +33,7 @@ jobs:
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
           FILTRO_NOMES: "BARREIRAS,LIVRAMENTO"
           MAX_LINHAS: "3000"
+          MOSTRAR_COLUNAS: "Plan!G,Plan!AS,Plan!AT,Plan!AY,Cart!AC,Cart!AJ,Cart!AV,Cart!D,Cart!AA"
           PYTHONUNBUFFERED: "1"
         run: |
           python -u - <<'PYEOF'
@@ -53,6 +54,10 @@ jobs:
           )
 
           MAX_LINHAS = int(os.getenv("MAX_LINHAS", "3000"))
+
+          # Colunas que devem aparecer no relatorio mesmo sem problema, pra provar
+          # que estao gravadas como data e exibindo data.
+          MOSTRAR = {c.strip() for c in os.getenv("MOSTRAR_COLUNAS", "").split(",") if c.strip()}
 
           # Texto que na verdade e data. Cobre dd/MM/yyyy, d/M/yy, "dez./24",
           # "dez/24" e ISO.
@@ -109,13 +114,28 @@ jobs:
                           if len(ex_texto_data) < 2:
                               ex_texto_data.append((primeira_linha + i, v_cru))
 
-                  if n_texto_data == 0 and n_sem_formato == 0:
+                  forcar = f"{nome_aba}!{col_letra}" in MOSTRAR
+
+                  if not forcar and n_texto_data == 0 and n_sem_formato == 0:
                       continue
+
+                  # Prova positiva: primeira data da coluna, cru -> exibido.
+                  ex_ok = []
+
+                  for i in range(len(cru)):
+                      v_cru = cru[i][c] if c < len(cru[i]) else ""
+                      v_fmt = fmt[i][c] if c < len(fmt[i]) else ""
+
+                      if eh_numero(v_cru) and 20000 <= float(v_cru) <= 90000:
+                          ex_ok.append((v_cru, v_fmt))
+
+                      if len(ex_ok) >= 2:
+                          break
 
                   print(
                       f"    {nome_aba}!{col_letra:<3} data={n_data:<5} "
                       f"TEXTO-QUE-E-DATA={n_texto_data:<5} SEM-FORMATO={n_sem_formato:<5} "
-                      f"| ex_txt={ex_texto_data} ex_sf={ex_sem_formato}"
+                      f"| ok={ex_ok} ex_txt={ex_texto_data} ex_sf={ex_sem_formato}"
                   )
 
 
