@@ -1,0 +1,122 @@
+name: TMP - Verificar datas (read-only)
+
+# Workflow TEMPORARIO de diagnostico. Nao escreve nada, so le.
+# Remover depois de validar o fix das datas coladas como texto.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verificar colunas de data
+        env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          from common import (
+              LISTA_PLANILHAS_SPREADSHEET_ID,
+              abrir_aba,
+              buscar_planilhas,
+              executar_com_retry,
+              get_gspread_client,
+              ler_range,
+              ultima_linha_preenchida_por_coluna,
+          )
+
+          # Destino -> coluna a inspecionar
+          COLS_CARTEIRA = {"D": 4, "AA": 27, "AF": 32, "AG": 33, "AU": 47}
+          COLS_ENTRADA = {"H": 8, "AA": 27}
+
+          client = get_gspread_client()
+          ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
+          planilhas = buscar_planilhas(ss_lista)
+
+          # Inspeciona as 2 primeiras planilhas: suficiente pra provar o comportamento.
+          for item in planilhas[:2]:
+              print("=" * 78)
+              print(f"PLANILHA: {item['nome']} | {item['id']}")
+              print("=" * 78)
+
+              ss = executar_com_retry(lambda: client.open_by_key(item["id"]))
+
+              for nome_aba, cols, primeira_linha in (
+                  ("Carteira", COLS_CARTEIRA, 2),
+                  ("Entrada", COLS_ENTRADA, 6),
+              ):
+                  aba = abrir_aba(ss, nome_aba)
+                  last = ultima_linha_preenchida_por_coluna(aba, 3)
+
+                  if last < primeira_linha:
+                      print(f"[{nome_aba}] sem dados.")
+                      continue
+
+                  fim = min(last, primeira_linha + 3000)
+
+                  for letra, col in cols.items():
+                      rng = f"{letra}{primeira_linha}:{letra}{fim}"
+
+                      # Serial = valor cru. Formatado = o que o usuario ve na tela.
+                      cru = ler_range(aba, rng, None, None, date_time_render_option="SERIAL_NUMBER")
+                      fmt = ler_range(aba, rng, None, None, date_time_render_option="FORMATTED_STRING")
+
+                      cru = [(r[0] if r else "") for r in cru]
+                      fmt = [(r[0] if r else "") for r in fmt]
+
+                      n_data = sum(1 for v in cru if isinstance(v, (int, float)) and not isinstance(v, bool))
+                      n_texto = sum(1 for v in cru if isinstance(v, str) and v.strip() != "")
+                      n_vazio = len(cru) - n_data - n_texto
+
+                      # Serial exibido como numero cru = falta formato de data na celula.
+                      sem_formato = [
+                          (i, cru[i], fmt[i])
+                          for i in range(min(len(cru), len(fmt)))
+                          if isinstance(cru[i], (int, float))
+                          and not isinstance(cru[i], bool)
+                          and str(fmt[i]).replace(".", "").replace(",", "").strip().isdigit()
+                      ]
+
+                      exemplos_data = [
+                          (cru[i], fmt[i])
+                          for i in range(min(len(cru), len(fmt)))
+                          if isinstance(cru[i], (int, float)) and not isinstance(cru[i], bool)
+                      ][:3]
+
+                      exemplos_texto = [
+                          fmt[i]
+                          for i in range(min(len(cru), len(fmt)))
+                          if isinstance(cru[i], str) and cru[i].strip() != ""
+                      ][:3]
+
+                      print("")
+                      print(f"[{nome_aba}!{letra}] amostra {rng}")
+                      print(f"  data real (numero): {n_data}")
+                      print(f"  texto:              {n_texto}")
+                      print(f"  vazio:              {n_vazio}")
+                      print(f"  exemplos data (cru -> exibido): {exemplos_data}")
+                      print(f"  exemplos texto (exibido):       {exemplos_texto}")
+
+                      if sem_formato:
+                          print(f"  [ATENCAO] {len(sem_formato)} celulas com data SEM formato de data.")
+                          print(f"            exemplos: {sem_formato[:3]}")
+                      else:
+                          print("  formato de data: OK (nenhum serial aparecendo como numero)")
+          PYEOF
