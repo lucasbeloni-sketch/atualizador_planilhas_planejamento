@@ -29,9 +29,13 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          FILTRO_NOMES: "IRECÊ,ITAPETINGA,LIVRAMENTO,GUANAMBI,VITORIA DA CONQUISTA,JEQUIÉ,IBOTIRAMA"
           PYTHONUNBUFFERED: "1"
         run: |
           python -u - <<'PYEOF'
+          import os
+          import time
+
           from common import (
               LISTA_PLANILHAS_SPREADSHEET_ID,
               abrir_aba,
@@ -50,7 +54,19 @@ jobs:
           ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
           planilhas = buscar_planilhas(ss_lista)
 
-          for item in planilhas:
+          # FILTRO opcional por nome, pra nao estourar a quota de leitura ao
+          # rodar logo depois do Bloco 1.
+          filtro = [n.strip().upper() for n in os.getenv("FILTRO_NOMES", "").split(",") if n.strip()]
+
+          if filtro:
+              planilhas = [p for p in planilhas if p["nome"].strip().upper() in filtro]
+              print(f"Filtro ativo: {filtro} -> {len(planilhas)} planilha(s)")
+
+          for indice_pl, item in enumerate(planilhas):
+              if indice_pl > 0:
+                  print("(pausa de 20s pra respeitar a quota de leitura)")
+                  time.sleep(20)
+
               print("=" * 78)
               print(f"PLANILHA: {item['nome']} | {item['id']}")
               print("=" * 78)
