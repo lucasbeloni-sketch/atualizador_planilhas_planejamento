@@ -460,6 +460,41 @@ def congelar_intervalo(
     )
 
 
+def formatar_data(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
+    """
+    Aplica formato de data dd/MM/yyyy nos ranges informados.
+
+    Necessário porque as colunas de data são gravadas como serial (número): numa
+    célula em "Automático" o serial apareceria como 45627 em vez de 01/12/2024.
+    Metade das planilhas de destino estava nessa situação.
+
+    Só afeta números: as linhas que são texto de verdade na origem (ex.:
+    "jan./25, dez./24", "-", "#N/A ()") continuam exibindo o texto.
+
+    Um único batch_format por aba, em vez de um request por coluna.
+    """
+    if not ranges:
+        return
+
+    pedidos = [
+        {
+            "range": range_a1,
+            "format": {
+                "numberFormat": {
+                    "type": "DATE",
+                    "pattern": "dd/MM/yyyy",
+                }
+            },
+        }
+        for range_a1 in ranges
+    ]
+
+    try:
+        executar_com_retry(lambda: worksheet.batch_format(pedidos))
+    except Exception as erro:
+        print(f"[AVISO] Não foi possível aplicar formato de data em {ranges}: {erro}")
+
+
 def formatar_data_hora(worksheet: gspread.Worksheet, range_a1: str) -> None:
     try:
         executar_com_retry(

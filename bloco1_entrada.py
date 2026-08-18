@@ -14,6 +14,7 @@ from common import (
     escrever_celula,
     escrever_matriz,
     executar_com_retry,
+    formatar_data,
     get_gspread_client,
     is_blank,
     ler_range,
@@ -198,6 +199,38 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
         blk_bq_cy = ler_range(aba_carteira_orig, f"BQ{start_row}:CY{last_src}", num_rows, 35)
         blk_cg_ch = ler_range(aba_carteira_orig, f"CG{start_row}:CH{last_src}", num_rows, 2)
 
+        # Colunas de data da origem, lidas com SERIAL_NUMBER.
+        #
+        # O FORMATTED_STRING padrão devolve a data já renderizada pelo formato da
+        # célula (ex.: "dez./24") e a escrita RAW gravava isso como TEXTO no destino.
+        # Com serial, data real vira número (valor de data de verdade, renderizado
+        # pelo formato que o destino já tem) e o que é texto na origem
+        # (ex.: "jan./25") continua vindo como texto.
+        #
+        # Destino -> origem: D=U, AA=BQ, AF=CE, AG=CQ, AU=CG.
+        # BQ, CE, CQ e CG caem dentro de BQ:CY, então uma única leitura serial
+        # desse range cobre as quatro; só o U precisa de leitura própria.
+        blk_u_serial = ler_range(
+            aba_carteira_orig,
+            f"U{start_row}:U{last_src}",
+            num_rows,
+            1,
+            date_time_render_option="SERIAL_NUMBER",
+        )
+        blk_bq_cy_serial = ler_range(
+            aba_carteira_orig,
+            f"BQ{start_row}:CY{last_src}",
+            num_rows,
+            35,
+            date_time_render_option="SERIAL_NUMBER",
+        )
+
+        # Índices dentro de blk_bq_cy_serial (BQ = 0)
+        idx_bq = 0
+        idx_ce = 14
+        idx_cq = 26
+        idx_cg = 16
+
         for i in range(num_rows):
             row = [""] * 47
 
@@ -207,12 +240,13 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             r_ca = blk_ca_cf[i]
             r_bq = blk_bq_cy[i]
             r_cg = blk_cg_ch[i]
+            r_bq_ser = blk_bq_cy_serial[i]
 
             # C = A
             row[0] = r_a[0]
 
-            # D = U
-            row[1] = r_a[20]
+            # D = U (serial, para não colar data como texto)
+            row[1] = blk_u_serial[i][0]
 
             # E:G = C:E
             row[2] = r_a[2]
@@ -231,14 +265,14 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             row[21] = r_aj[0]
             row[22] = r_aj[1]
 
-            # Z = CA, AB = CC, AC = CF, AF = CE
+            # Z = CA, AB = CC, AC = CF, AF = CE (serial: data, não texto)
             row[23] = r_ca[0]
             row[25] = r_ca[2]
             row[26] = r_ca[5]
-            row[29] = r_ca[4]
+            row[29] = r_bq_ser[idx_ce]
 
-            # AA = BQ
-            row[24] = r_bq[0]
+            # AA = BQ (serial: data, não texto)
+            row[24] = r_bq_ser[idx_bq]
 
             # AD:AE = AW:AX
             row[27] = r_aw[0]
@@ -247,6 +281,9 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             # AG:AM = CQ:CW
             for k in range(7):
                 row[30 + k] = r_bq[26 + k]
+
+            # AG = CQ (serial: data, não texto)
+            row[30] = r_bq_ser[idx_cq]
 
             # AN:AR = BR:BV
             row[37] = r_bq[1]
@@ -259,8 +296,8 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             row[42] = r_bq[33]
             row[43] = r_bq[34]
 
-            # AU:AV = CG:CH
-            row[44] = r_cg[0]
+            # AU:AV = CG:CH (AU serial: data, não texto)
+            row[44] = r_bq_ser[idx_cg]
             row[45] = r_cg[1]
 
             saida_c_aw.append(row)
@@ -323,6 +360,24 @@ def atualizar_carteira(
         return
 
     escrever_matriz(aba_carteira_dest, 1, 3, saida_c_aw)
+
+    # Garante formato de data nas colunas gravadas como serial. Sem isso, numa
+    # célula em "Automático" o serial aparece como 45627 em vez de 01/12/2024
+    # (metade das planilhas de destino estava assim). Da linha 2 pra baixo, para
+    # não tocar o cabeçalho da linha 1. Um único request por planilha.
+    ultima_linha_carteira = num_rows
+
+    if ultima_linha_carteira >= 2:
+        formatar_data(
+            aba_carteira_dest,
+            [
+                f"D2:D{ultima_linha_carteira}",
+                f"AA2:AA{ultima_linha_carteira}",
+                f"AF2:AF{ultima_linha_carteira}",
+                f"AG2:AG{ultima_linha_carteira}",
+                f"AU2:AU{ultima_linha_carteira}",
+            ],
+        )
 
     # Calcula coluna B via script
     aba_config = abrir_aba(ss_dest, "BD_Config")
@@ -399,6 +454,31 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
     # Lê B:AW porque o filtro usa B e as demais colunas estão até AW.
     carteira_rows = ler_range(aba_carteira, f"B1:AW{last_carteira}", last_carteira, 48)
 
+    # Segunda leitura das colunas de data da Carteira, agora como serial.
+    #
+    # carteira_rows vem com FORMATTED_STRING, então uma data em D ou AA volta
+    # renderizada pelo formato da célula (ex.: "dez./24") e a escrita RAW gravava
+    # isso como TEXTO na Entrada, desfazendo na Entrada o que o Bloco 1.2 acertou
+    # na Carteira. C:AF num único range cobre a chave (C) e as três colunas
+    # necessárias, custando 1 request em vez de 3.
+    #
+    # Também alimenta os flags das colunas D e E da Entrada: is_date_like devolve
+    # False para "dez./24" (nenhum formato de data casa com esse texto) e True
+    # para o serial, que é o comportamento do ISDATE original.
+    carteira_datas = ler_range(
+        aba_carteira,
+        f"C1:AF{last_carteira}",
+        last_carteira,
+        30,
+        date_time_render_option="SERIAL_NUMBER",
+    )
+
+    # Índices dentro de carteira_datas (C = 0)
+    idx_dt_c = 0
+    idx_dt_d = 1
+    idx_dt_aa = 24
+    idx_dt_af = 29
+
     last_validador = ultima_linha_preenchida_por_coluna(aba_cart_validador, 1)
 
     cart_validador_rows = (
@@ -411,12 +491,16 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
 
     # Mapas para simular XLOOKUP em Carteira!C:C
     mapa_c_para_h = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 6)    # C -> H
-    mapa_c_para_aa = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 25)  # C -> AA
-    mapa_c_para_af = montar_mapa_primeira_ocorrencia(carteira_rows, 1, 30)  # C -> AF
+
+    # AA e AF saem da leitura serial: os flags precisam ver data, não texto.
+    mapa_c_para_aa = montar_mapa_primeira_ocorrencia(carteira_datas, idx_dt_c, idx_dt_aa)
+    mapa_c_para_af = montar_mapa_primeira_ocorrencia(carteira_datas, idx_dt_c, idx_dt_af)
 
     saida_c_ad = []
 
-    for row in carteira_rows:
+    for i, row in enumerate(carteira_rows):
+        row_dt = carteira_datas[i]
+
         valor_b = valor_coluna(row, 2)
 
         if is_blank(valor_b) or not is_zero(valor_b):
@@ -443,8 +527,8 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
         # G = Carteira!E
         out[4] = valor_coluna(row, 5)
 
-        # H = Carteira!D
-        out[5] = valor_coluna(row, 4)
+        # H = Carteira!D (serial: data, não texto)
+        out[5] = row_dt[idx_dt_d]
 
         # I:K ficam vazias
 
@@ -479,9 +563,9 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
         # Y = Observações Carteira via Cart_Validador
         out[22] = mapa_observacao.get(projeto_key, "")
 
-        # Z:AA = Carteira!Z:AA
+        # Z:AA = Carteira!Z:AA (AA serial: data, não texto)
         out[23] = valor_coluna(row, 26)
-        out[24] = valor_coluna(row, 27)
+        out[24] = row_dt[idx_dt_aa]
 
         # AB:AC = Carteira!AD:AE
         out[25] = valor_coluna(row, 30)
@@ -494,6 +578,19 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
 
     if saida_c_ad:
         escrever_matriz(aba_entrada, 6, 3, saida_c_ad)
+
+        # H recebe serial (Carteira!D): garante formato de data. AA também vem de
+        # coluna de data, mas na amostra só apareceu texto ("-"); formatada junto
+        # porque quando vier data precisa exibir data.
+        ultima_linha_saida = 6 + len(saida_c_ad) - 1
+
+        formatar_data(
+            aba_entrada,
+            [
+                f"H6:H{ultima_linha_saida}",
+                f"AA6:AA{ultima_linha_saida}",
+            ],
+        )
 
     finalizar_execucao(aba_entrada)
 
