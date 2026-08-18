@@ -12,12 +12,28 @@ from common import (
     congelar_intervalo,
     escrever_celula,
     executar_com_retry,
+    formatar_data,
     formatar_data_hora,
     get_gspread_client,
     limpar_intervalos,
     ultima_linha_preenchida_por_coluna,
 )
 from gspread.utils import rowcol_to_a1
+
+
+# =========================================================
+# CONFIGURAÇÕES ESPECÍFICAS DO BLOCO 2
+# =========================================================
+# Congela lendo data como serial numérico, igual o Bloco 3 já faz. Com o
+# FORMATTED_STRING default, a fórmula que devolve data era congelada como TEXTO
+# (ex.: G, AS, AT e AY viravam '01/12/2024' com apóstrofo). Números e textos não
+# são afetados por essa opção, então vale para todos os ranges congelados.
+RENDER_SERIAL = "SERIAL_NUMBER"
+
+# Colunas que a análise das planilhas mostrou serem de data. Precisam de formato
+# de data porque agora recebem serial: sem isso apareceria 45627 em vez de
+# 01/12/2024. As colunas de moeda (AI, AJ, AL, AM, AO, AP) ficam de fora.
+COLUNAS_DATA = ["G", "AS", "AT", "AY"]
 
 
 # =========================================================
@@ -100,7 +116,7 @@ def copiar_calcular_e_congelar(
 
     # congelar_intervalo aguarda o cálculo estabilizar antes de ler/congelar.
     print(f"Aguardando cálculo e congelando {nome_bloco}: {range_destino}")
-    congelar_intervalo(worksheet, range_destino)
+    congelar_intervalo(worksheet, range_destino, date_time_render_option=RENDER_SERIAL)
 
 
 # =========================================================
@@ -228,6 +244,12 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
         dest_start_row=6,
         dest_end_row=last_row,
         nome_bloco="AX:BD",
+    )
+
+    # Garante formato de data nas colunas que passaram a receber serial.
+    formatar_data(
+        worksheet,
+        [f"{coluna}6:{coluna}{last_row}" for coluna in COLUNAS_DATA],
     )
 
     finalizar_execucao(worksheet)

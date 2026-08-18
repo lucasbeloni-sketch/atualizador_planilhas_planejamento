@@ -197,7 +197,8 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
         blk_aw_ax = ler_range(aba_carteira_orig, f"AW{start_row}:AX{last_src}", num_rows, 2)
         blk_ca_cf = ler_range(aba_carteira_orig, f"CA{start_row}:CF{last_src}", num_rows, 6)
         blk_bq_cy = ler_range(aba_carteira_orig, f"BQ{start_row}:CY{last_src}", num_rows, 35)
-        blk_cg_ch = ler_range(aba_carteira_orig, f"CG{start_row}:CH{last_src}", num_rows, 2)
+        # CG:CH não é mais lido aqui: AU e AV vêm do bloco serial (BQ:CY cobre
+        # CG e CH), então a leitura formatada desse range ficou sem uso.
 
         # Colunas de data da origem, lidas com SERIAL_NUMBER.
         #
@@ -228,8 +229,11 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
         # Índices dentro de blk_bq_cy_serial (BQ = 0)
         idx_bq = 0
         idx_ce = 14
-        idx_cq = 26
+        idx_cf = 15
         idx_cg = 16
+        idx_ch = 17
+        idx_cq = 26
+        idx_ct = 29
 
         for i in range(num_rows):
             row = [""] * 47
@@ -239,7 +243,6 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             r_aw = blk_aw_ax[i]
             r_ca = blk_ca_cf[i]
             r_bq = blk_bq_cy[i]
-            r_cg = blk_cg_ch[i]
             r_bq_ser = blk_bq_cy_serial[i]
 
             # C = A
@@ -265,10 +268,10 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             row[21] = r_aj[0]
             row[22] = r_aj[1]
 
-            # Z = CA, AB = CC, AC = CF, AF = CE (serial: data, não texto)
+            # Z = CA, AB = CC, AC = CF, AF = CE (AC e AF serial: data, não texto)
             row[23] = r_ca[0]
             row[25] = r_ca[2]
-            row[26] = r_ca[5]
+            row[26] = r_bq_ser[idx_cf]
             row[29] = r_bq_ser[idx_ce]
 
             # AA = BQ (serial: data, não texto)
@@ -282,8 +285,9 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             for k in range(7):
                 row[30 + k] = r_bq[26 + k]
 
-            # AG = CQ (serial: data, não texto)
+            # AG = CQ e AJ = CT (serial: data, não texto)
             row[30] = r_bq_ser[idx_cq]
+            row[33] = r_bq_ser[idx_ct]
 
             # AN:AR = BR:BV
             row[37] = r_bq[1]
@@ -296,9 +300,9 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             row[42] = r_bq[33]
             row[43] = r_bq[34]
 
-            # AU:AV = CG:CH (AU serial: data, não texto)
+            # AU:AV = CG:CH (serial: data, não texto)
             row[44] = r_bq_ser[idx_cg]
-            row[45] = r_cg[1]
+            row[45] = r_bq_ser[idx_ch]
 
             saida_c_aw.append(row)
 
@@ -371,11 +375,8 @@ def atualizar_carteira(
         formatar_data(
             aba_carteira_dest,
             [
-                f"D2:D{ultima_linha_carteira}",
-                f"AA2:AA{ultima_linha_carteira}",
-                f"AF2:AF{ultima_linha_carteira}",
-                f"AG2:AG{ultima_linha_carteira}",
-                f"AU2:AU{ultima_linha_carteira}",
+                f"{coluna}2:{coluna}{ultima_linha_carteira}"
+                for coluna in ("D", "AA", "AC", "AF", "AG", "AJ", "AU", "AV")
             ],
         )
 
