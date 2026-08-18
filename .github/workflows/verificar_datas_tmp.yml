@@ -50,8 +50,7 @@ jobs:
           ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
           planilhas = buscar_planilhas(ss_lista)
 
-          # Inspeciona as 2 primeiras planilhas: suficiente pra provar o comportamento.
-          for item in planilhas[:2]:
+          for item in planilhas:
               print("=" * 78)
               print(f"PLANILHA: {item['nome']} | {item['id']}")
               print("=" * 78)
@@ -106,17 +105,14 @@ jobs:
                           if isinstance(cru[i], str) and cru[i].strip() != ""
                       ][:3]
 
-                      print("")
-                      print(f"[{nome_aba}!{letra}] amostra {rng}")
-                      print(f"  data real (numero): {n_data}")
-                      print(f"  texto:              {n_texto}")
-                      print(f"  vazio:              {n_vazio}")
-                      print(f"  exemplos data (cru -> exibido): {exemplos_data}")
-                      print(f"  exemplos texto (exibido):       {exemplos_texto}")
+                      status = (
+                          f"SEM FORMATO ({len(sem_formato)})" if sem_formato else "OK"
+                      )
+                      amostra = exemplos_data[0] if exemplos_data else ""
 
-                      if sem_formato:
-                          print(f"  [ATENCAO] {len(sem_formato)} celulas com data SEM formato de data.")
-                          print(f"            exemplos: {sem_formato[:3]}")
-                      else:
-                          print("  formato de data: OK (nenhum serial aparecendo como numero)")
+                      print(
+                          f"  {nome_aba}!{letra:<2} | data={n_data:<5} texto={n_texto:<5} "
+                          f"vazio={n_vazio:<5} | {status:<18} | ex={amostra} "
+                          f"| txt={exemplos_texto[:1]}"
+                      )
           PYEOF
