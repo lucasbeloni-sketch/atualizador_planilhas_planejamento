@@ -1,0 +1,179 @@
+name: TMP - Verificar datas (read-only)
+
+# Workflow TEMPORARIO de diagnostico. Nao escreve nada, so le.
+# Procura celulas de TEXTO que na verdade sao data (bug do FORMATTED_STRING)
+# e celulas de data SEM formato de data (serial aparecendo como numero cru).
+# Remover depois de decidir o que corrigir.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verificar colunas de data
+        env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          FILTRO_NOMES: "BARREIRAS,LIVRAMENTO"
+          MAX_LINHAS: "3000"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          import os
+          import re
+          import time
+
+          from gspread.utils import rowcol_to_a1
+
+          from common import (
+              LISTA_PLANILHAS_SPREADSHEET_ID,
+              abrir_aba,
+              buscar_planilhas,
+              executar_com_retry,
+              get_gspread_client,
+              ler_range,
+              ultima_linha_preenchida_por_coluna,
+          )
+
+          MAX_LINHAS = int(os.getenv("MAX_LINHAS", "3000"))
+
+          # Texto que na verdade e data. Cobre dd/MM/yyyy, d/M/yy, "dez./24",
+          # "dez/24" e ISO.
+          MESES = "jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez"
+          PADROES_DATA = [
+              re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}( \d{1,2}:\d{2}(:\d{2})?)?$"),
+              re.compile(rf"^({MESES})\.?/\d{{2,4}}$", re.IGNORECASE),
+              re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$"),
+          ]
+
+
+          def parece_data(texto: str) -> bool:
+              t = texto.strip()
+              return any(p.match(t) for p in PADROES_DATA)
+
+
+          def eh_numero(valor) -> bool:
+              return isinstance(valor, (int, float)) and not isinstance(valor, bool)
+
+
+          def analisar(nome_aba, primeira_col, cru, fmt, primeira_linha):
+              """Reporta, por coluna, data-como-texto e data-sem-formato."""
+              n_cols = max(
+                  max((len(r) for r in cru), default=0),
+                  max((len(r) for r in fmt), default=0),
+              )
+
+              for c in range(n_cols):
+                  col_letra = re.sub(r"\d+", "", rowcol_to_a1(1, primeira_col + c))
+
+                  n_data = 0
+                  n_texto_data = 0
+                  n_sem_formato = 0
+                  ex_texto_data = []
+                  ex_sem_formato = []
+
+                  for i in range(len(cru)):
+                      v_cru = cru[i][c] if c < len(cru[i]) else ""
+                      v_fmt = fmt[i][c] if c < len(fmt[i]) else ""
+
+                      if eh_numero(v_cru):
+                          n_data += 1
+
+                          # Serial exibido como numero cru = falta formato de data.
+                          texto_fmt = str(v_fmt).replace(".", "").replace(",", "").strip()
+
+                          if texto_fmt.isdigit() and 20000 <= float(v_cru) <= 90000:
+                              n_sem_formato += 1
+                              if len(ex_sem_formato) < 2:
+                                  ex_sem_formato.append((primeira_linha + i, v_cru))
+
+                      elif isinstance(v_cru, str) and parece_data(v_cru):
+                          n_texto_data += 1
+                          if len(ex_texto_data) < 2:
+                              ex_texto_data.append((primeira_linha + i, v_cru))
+
+                  if n_texto_data == 0 and n_sem_formato == 0:
+                      continue
+
+                  print(
+                      f"    {nome_aba}!{col_letra:<3} data={n_data:<5} "
+                      f"TEXTO-QUE-E-DATA={n_texto_data:<5} SEM-FORMATO={n_sem_formato:<5} "
+                      f"| ex_txt={ex_texto_data} ex_sf={ex_sem_formato}"
+                  )
+
+
+          client = get_gspread_client()
+          ss_lista = executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID))
+          planilhas = buscar_planilhas(ss_lista)
+
+          filtro = [n.strip().upper() for n in os.getenv("FILTRO_NOMES", "").split(",") if n.strip()]
+
+          if filtro:
+              planilhas = [p for p in planilhas if p["nome"].strip().upper() in filtro]
+
+          print(f"Planilhas a inspecionar: {[p['nome'] for p in planilhas]}")
+
+          for indice_pl, item in enumerate(planilhas):
+              if indice_pl > 0:
+                  print("(pausa de 30s pra respeitar a quota de leitura)")
+                  time.sleep(30)
+
+              print("")
+              print("=" * 78)
+              print(f"PLANILHA: {item['nome']} | {item['id']}")
+              print("=" * 78)
+
+              ss = executar_com_retry(lambda: client.open_by_key(item["id"]))
+
+              # ----- Carteira_Planejador (Bloco 2): B:BF a partir da linha 6 -----
+              aba_plan = abrir_aba(ss, "Carteira_Planejador")
+              last_plan = ultima_linha_preenchida_por_coluna(aba_plan, 13)
+
+              if last_plan < 6:
+                  print("  [Carteira_Planejador] sem dados.")
+              else:
+                  fim = min(last_plan, 6 + MAX_LINHAS)
+                  rng = f"B6:BF{fim}"
+                  print(f"  Carteira_Planejador {rng} (last_row real={last_plan})")
+
+                  cru = ler_range(aba_plan, rng, None, None, date_time_render_option="SERIAL_NUMBER")
+                  fmt = ler_range(aba_plan, rng, None, None, date_time_render_option="FORMATTED_STRING")
+
+                  analisar("Plan", 2, cru, fmt, 6)
+
+              print("  (pausa 15s)")
+              time.sleep(15)
+
+              # ----- Carteira (Bloco 1): C:AW a partir da linha 2 -----
+              aba_cart = abrir_aba(ss, "Carteira")
+              last_cart = ultima_linha_preenchida_por_coluna(aba_cart, 3)
+
+              if last_cart < 2:
+                  print("  [Carteira] sem dados.")
+              else:
+                  fim = min(last_cart, 2 + MAX_LINHAS)
+                  rng = f"C2:AW{fim}"
+                  print(f"  Carteira {rng} (last_row real={last_cart})")
+
+                  cru = ler_range(aba_cart, rng, None, None, date_time_render_option="SERIAL_NUMBER")
+                  fmt = ler_range(aba_cart, rng, None, None, date_time_render_option="FORMATTED_STRING")
+
+                  analisar("Cart", 3, cru, fmt, 2)
+          PYEOF
