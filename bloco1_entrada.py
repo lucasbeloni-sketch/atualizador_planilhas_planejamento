@@ -14,6 +14,7 @@ from common import (
     escrever_celula,
     escrever_matriz,
     executar_com_retry,
+    formatar_data,
     get_gspread_client,
     is_blank,
     ler_range,
@@ -360,6 +361,24 @@ def atualizar_carteira(
 
     escrever_matriz(aba_carteira_dest, 1, 3, saida_c_aw)
 
+    # Garante formato de data nas colunas gravadas como serial. Sem isso, numa
+    # célula em "Automático" o serial aparece como 45627 em vez de 01/12/2024
+    # (metade das planilhas de destino estava assim). Da linha 2 pra baixo, para
+    # não tocar o cabeçalho da linha 1. Um único request por planilha.
+    ultima_linha_carteira = num_rows
+
+    if ultima_linha_carteira >= 2:
+        formatar_data(
+            aba_carteira_dest,
+            [
+                f"D2:D{ultima_linha_carteira}",
+                f"AA2:AA{ultima_linha_carteira}",
+                f"AF2:AF{ultima_linha_carteira}",
+                f"AG2:AG{ultima_linha_carteira}",
+                f"AU2:AU{ultima_linha_carteira}",
+            ],
+        )
+
     # Calcula coluna B via script
     aba_config = abrir_aba(ss_dest, "BD_Config")
     cfg_vals = ler_range(aba_config, "B4:B9", 6, 1)
@@ -559,6 +578,19 @@ def atualizar_entrada_nova(ss_dest: gspread.Spreadsheet) -> None:
 
     if saida_c_ad:
         escrever_matriz(aba_entrada, 6, 3, saida_c_ad)
+
+        # H recebe serial (Carteira!D): garante formato de data. AA também vem de
+        # coluna de data, mas na amostra só apareceu texto ("-"); formatada junto
+        # porque quando vier data precisa exibir data.
+        ultima_linha_saida = 6 + len(saida_c_ad) - 1
+
+        formatar_data(
+            aba_entrada,
+            [
+                f"H6:H{ultima_linha_saida}",
+                f"AA6:AA{ultima_linha_saida}",
+            ],
+        )
 
     finalizar_execucao(aba_entrada)
 
