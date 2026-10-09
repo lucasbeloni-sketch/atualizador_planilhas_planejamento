@@ -1,0 +1,47 @@
+name: TMP - Verificar BRUMADO (read-only)
+
+# Workflow TEMPORARIO, so le. Remover depois da validacao.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -q -r requirements.txt
+      - env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          from collections import Counter
+          from common import executar_com_retry, get_gspread_client
+          ss = executar_com_retry(lambda: get_gspread_client().open_by_key("1oS619l3x_D1mXkvDpw8vs91G6ipZmsK83JqEIwPj7Uk"))
+          alvos = [("Carteira AJ", "'Carteira'!AJ2:AJ"), ("Planejador AY", "'Carteira_Planejador'!AY6:AY"), ("Planejador G", "'Carteira_Planejador'!G6:G")]
+          meta = ss.fetch_sheet_metadata(params={
+              "ranges": [r for _, r in alvos],
+              "includeGridData": "true",
+              "fields": "sheets.data(rowData.values(effectiveValue,formattedValue))",
+          })
+          for (nome, _), bloco in zip(alvos, meta["sheets"][0]["data"]):
+              tipos = Counter()
+              nums = []
+              pins3 = []
+              for j, r in enumerate(bloco.get("rowData", [])):
+                  v = (r.get("values") or [{}])[0]
+                  ev = v.get("effectiveValue", {})
+                  if "numberValue" in ev:
+                      tipos["numero"] += 1
+                      if len(nums) < 4: nums.append(v.get("formattedValue"))
+                  elif ev.get("stringValue", "").strip():
+                      tipos["texto"] += 1
+                      fv = v.get("formattedValue", "")
+                      if fv.count(".") == 2 and len(fv.split(".")[-1]) == 4 and fv not in pins3: pins3.append(fv)
+              print(nome, dict(tipos), "| ex numeros:", nums, "| PINs d.m.aaaa:", pins3[:8])
+          PYEOF
