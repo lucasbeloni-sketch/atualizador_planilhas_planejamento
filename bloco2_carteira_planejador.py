@@ -15,6 +15,7 @@ from common import (
     filtrar_planilhas,
     formatar_data,
     formatar_data_hora,
+    formatar_numero,
     get_gspread_client,
     limpar_intervalos,
     ultima_linha_preenchida_por_coluna,
@@ -46,6 +47,13 @@ COLUNAS_DATA = ["AS", "AT", "AX"]
 # "01/07/2026". Mesmo padrão da linha-modelo G1 de todas as planilhas.
 COLUNAS_MES = ["G"]
 PADRAO_MES = 'mmm"/"yy" "'
+
+# E (AVNR) e F (AVNPs Atuais) são percentuais: "100%", sem casas decimais.
+# Mesmo padrão da linha-modelo E1/F1. Sem isso, onde a célula estava em
+# "Automático" o valor aparecia como 1 em vez de 100%. Em F, as linhas com
+# vários AVNPs ("100%, 50%") são texto e não mudam.
+COLUNAS_PERCENTUAL = ["E", "F"]
+PADRAO_PERCENTUAL = "0%"
 
 
 # =========================================================
@@ -267,6 +275,12 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
         worksheet,
         [f"{coluna}6:{coluna}{last_row}" for coluna in COLUNAS_MES],
         pattern=PADRAO_MES,
+    )
+    formatar_numero(
+        worksheet,
+        [f"{coluna}6:{coluna}{last_row}" for coluna in COLUNAS_PERCENTUAL],
+        "PERCENT",
+        PADRAO_PERCENTUAL,
     )
 
     finalizar_execucao(worksheet)

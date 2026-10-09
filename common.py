@@ -460,6 +460,40 @@ def congelar_intervalo(
     )
 
 
+def formatar_numero(
+    worksheet: gspread.Worksheet,
+    ranges: list[str],
+    tipo: str,
+    pattern: str,
+) -> None:
+    """
+    Aplica um numberFormat (tipo + pattern) nos ranges informados.
+
+    Só muda a exibição de números: texto continua exibindo o texto.
+    Um único batch_format por chamada, em vez de um request por coluna.
+    """
+    if not ranges:
+        return
+
+    pedidos = [
+        {
+            "range": range_a1,
+            "format": {
+                "numberFormat": {
+                    "type": tipo,
+                    "pattern": pattern,
+                }
+            },
+        }
+        for range_a1 in ranges
+    ]
+
+    try:
+        executar_com_retry(lambda: worksheet.batch_format(pedidos))
+    except Exception as erro:
+        print(f"[AVISO] Não foi possível aplicar formato {tipo} '{pattern}' em {ranges}: {erro}")
+
+
 def formatar_data(
     worksheet: gspread.Worksheet,
     ranges: list[str],
@@ -474,29 +508,8 @@ def formatar_data(
 
     Só afeta números: as linhas que são texto de verdade na origem (ex.:
     "jan./25, dez./24", "-", "#N/A ()") continuam exibindo o texto.
-
-    Um único batch_format por aba, em vez de um request por coluna.
     """
-    if not ranges:
-        return
-
-    pedidos = [
-        {
-            "range": range_a1,
-            "format": {
-                "numberFormat": {
-                    "type": "DATE",
-                    "pattern": pattern,
-                }
-            },
-        }
-        for range_a1 in ranges
-    ]
-
-    try:
-        executar_com_retry(lambda: worksheet.batch_format(pedidos))
-    except Exception as erro:
-        print(f"[AVISO] Não foi possível aplicar formato de data em {ranges}: {erro}")
+    formatar_numero(worksheet, ranges, "DATE", pattern)
 
 
 def formatar_data_hora(worksheet: gspread.Worksheet, range_a1: str) -> None:
