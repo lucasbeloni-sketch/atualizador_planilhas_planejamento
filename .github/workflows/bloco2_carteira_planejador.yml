@@ -2,6 +2,11 @@ name: Bloco 2 - Carteira Planejador
 
 on:
   workflow_dispatch:
+    inputs:
+      planilhas:
+        description: "Nomes de BD_Planilhas!B separados por virgula (vazio = todas)"
+        required: false
+        default: ""
 
 concurrency:
   # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
@@ -32,5 +37,6 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          PLANILHAS_FILTRO: ${{ inputs.planilhas }}
           PYTHONUNBUFFERED: "1"
         run: python -u bloco2_carteira_planejador.py

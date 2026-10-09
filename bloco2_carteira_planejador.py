@@ -1,3 +1,4 @@
+import os
 import traceback
 from datetime import datetime
 
@@ -319,6 +320,19 @@ def main() -> None:
             f"Nenhum ID encontrado na aba BD_Planilhas!C3:C "
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
+
+    # Filtro opcional por nome (BD_Planilhas!B), separado por vírgula, pra teste
+    # manual numa unidade só. Vazio = todas, que é o que a pipeline agendada usa.
+    filtro = {
+        nome.strip().upper()
+        for nome in os.getenv("PLANILHAS_FILTRO", "").split(",")
+        if nome.strip()
+    }
+    if filtro:
+        planilhas = [p for p in planilhas if p["nome"].strip().upper() in filtro]
+        if not planilhas:
+            raise RuntimeError(f"Nenhuma planilha de BD_Planilhas bate com o filtro {sorted(filtro)}.")
+        print(f"Filtro PLANILHAS_FILTRO ativo: {sorted(filtro)}")
 
     print(f"Total de planilhas encontradas: {len(planilhas)}")
 
