@@ -1,0 +1,42 @@
+name: TMP - Verificar G BRUMADO (read-only)
+
+# Workflow TEMPORARIO, so le. Remover depois da validacao.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -q -r requirements.txt
+      - env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          from collections import Counter
+          from common import executar_com_retry, get_gspread_client
+          ss = executar_com_retry(lambda: get_gspread_client().open_by_key("1oS619l3x_D1mXkvDpw8vs91G6ipZmsK83JqEIwPj7Uk"))
+          meta = ss.fetch_sheet_metadata(params={
+              "ranges": ["'Carteira_Planejador'!G6:G", "'Carteira_Planejador'!AS6:AS"],
+              "includeGridData": "true",
+              "fields": "sheets.data(rowData.values(userEnteredFormat.numberFormat.pattern,formattedValue,effectiveValue))",
+          })
+          for nome, bloco in zip(["G", "AS"], meta["sheets"][0]["data"]):
+              rows = bloco.get("rowData", [])
+              pads = Counter()
+              ex = []
+              for i, r in enumerate(rows):
+                  v = (r.get("values") or [{}])[0]
+                  pads[v.get("userEnteredFormat", {}).get("numberFormat", {}).get("pattern")] += 1
+                  if "numberValue" in v.get("effectiveValue", {}) and len(ex) < 6:
+                      ex.append((f"{nome}{i+6}", v["effectiveValue"]["numberValue"], v.get("formattedValue")))
+              print(nome, "padroes:", dict(pads))
+              print(nome, "exemplos numericos:", ex)
+          PYEOF
