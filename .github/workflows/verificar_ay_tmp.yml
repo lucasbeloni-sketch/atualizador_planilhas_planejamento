@@ -1,0 +1,50 @@
+name: TMP - Verificar AY (read-only)
+
+# Workflow TEMPORARIO, so le. Remover depois da validacao.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -q -r requirements.txt
+      - env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          import time
+          from common import LISTA_PLANILHAS_SPREADSHEET_ID, buscar_planilhas, executar_com_retry, get_gspread_client
+          client = get_gspread_client()
+          planilhas = buscar_planilhas(executar_com_retry(lambda: client.open_by_key(LISTA_PLANILHAS_SPREADSHEET_ID)))
+          for i, item in enumerate(planilhas):
+              if i:
+                  time.sleep(6)
+              ss = executar_com_retry(lambda: client.open_by_key(item["id"]))
+              meta = executar_com_retry(lambda: ss.fetch_sheet_metadata(params={
+                  "ranges": ["'Carteira_Planejador'!AY1", "'Carteira_Planejador'!AY6:AY"],
+                  "includeGridData": "true",
+                  "fields": "sheets.data(rowData.values(userEnteredValue,effectiveValue,formattedValue))",
+              }))
+              d = meta["sheets"][0]["data"]
+              f1 = ((d[0].get("rowData") or [{}])[0].get("values") or [{}])[0].get("userEnteredValue")
+              nums = []
+              ntxt = 0
+              for j, r in enumerate(d[1].get("rowData", [])):
+                  v = (r.get("values") or [{}])[0]
+                  ev = v.get("effectiveValue", {})
+                  if "numberValue" in ev:
+                      nums.append((f"AY{j+6}", ev["numberValue"], v.get("formattedValue")))
+                  elif ev.get("stringValue", "").strip():
+                      ntxt += 1
+              print(f"{item['nome']:<22} AY1={f1}")
+              print(f"{'':<22} texto={ntxt} numeros={len(nums)} ex={nums[:5]}")
+          PYEOF
