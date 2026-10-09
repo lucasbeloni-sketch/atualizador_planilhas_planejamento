@@ -2,6 +2,11 @@ name: Bloco 1 - Entrada
 
 on:
   workflow_dispatch:
+    inputs:
+      planilhas:
+        description: "Nomes de BD_Planilhas!B separados por virgula (vazio = todas)"
+        required: false
+        default: ""
 
 concurrency:
   # Grupo compartilhado entre TODOS os workflows que escrevem nas mesmas
@@ -33,5 +38,6 @@ jobs:
           GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
           LISTA_PLANILHAS_SPREADSHEET_ID: "1kMJedysNlxxPU2PtCwICHlBbZVL4YpvyHSsR7Xl71Ig"
           ORIGEM_SPREADSHEET_ID: "1lUNIeWCddfmvJEjWJpQMtuR4oRuMsI3VImDY0xBp3Bs"
+          PLANILHAS_FILTRO: ${{ inputs.planilhas }}
           PYTHONUNBUFFERED: "1"
         run: python -u bloco1_entrada.py

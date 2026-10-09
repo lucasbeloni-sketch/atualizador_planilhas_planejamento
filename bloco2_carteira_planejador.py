@@ -1,4 +1,3 @@
-import os
 import traceback
 from datetime import datetime
 
@@ -13,6 +12,7 @@ from common import (
     congelar_intervalo,
     escrever_celula,
     executar_com_retry,
+    filtrar_planilhas,
     formatar_data,
     formatar_data_hora,
     get_gspread_client,
@@ -38,7 +38,9 @@ RENDER_SERIAL = "SERIAL_NUMBER"
 # Cuidado: as listas de formato do Bloco 3 (moeda AL/AM/AO/AQ/BQ, percentual
 # AN/AP/AR) são do Plan_Principal. Mesmas letras, outra aba, outro significado,
 # e não servem pra classificar as colunas daqui.
-COLUNAS_DATA = ["AS", "AT", "AX", "AY"]
+#
+# AY não entra: é PIN (texto, via XLOOKUP em Carteira!AJ), não data.
+COLUNAS_DATA = ["AS", "AT", "AX"]
 
 # G (Carteiras) é mês de referência, não data cheia: exibe "jul./26", não
 # "01/07/2026". Mesmo padrão da linha-modelo G1 de todas as planilhas.
@@ -321,18 +323,7 @@ def main() -> None:
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
 
-    # Filtro opcional por nome (BD_Planilhas!B), separado por vírgula, pra teste
-    # manual numa unidade só. Vazio = todas, que é o que a pipeline agendada usa.
-    filtro = {
-        nome.strip().upper()
-        for nome in os.getenv("PLANILHAS_FILTRO", "").split(",")
-        if nome.strip()
-    }
-    if filtro:
-        planilhas = [p for p in planilhas if p["nome"].strip().upper() in filtro]
-        if not planilhas:
-            raise RuntimeError(f"Nenhuma planilha de BD_Planilhas bate com o filtro {sorted(filtro)}.")
-        print(f"Filtro PLANILHAS_FILTRO ativo: {sorted(filtro)}")
+    planilhas = filtrar_planilhas(planilhas)
 
     print(f"Total de planilhas encontradas: {len(planilhas)}")
 

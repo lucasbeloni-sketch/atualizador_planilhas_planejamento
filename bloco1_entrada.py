@@ -1,6 +1,6 @@
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import gspread
 
@@ -14,6 +14,7 @@ from common import (
     escrever_celula,
     escrever_matriz,
     executar_com_retry,
+    filtrar_planilhas,
     formatar_data,
     get_gspread_client,
     is_blank,
@@ -70,6 +71,22 @@ def is_zero(valor) -> bool:
         return texto in {"0", "0.0"}
 
     return False
+
+
+def pin_de_serial(valor):
+    """
+    Desfaz o PIN que o Sheets converteu em data na origem (Carteira!CT).
+
+    PIN de 3 partes no formato d.m.aaaa (ex.: "8.6.2006", "14.7.2003") é lido
+    pelo Sheets como data e chega aqui como serial (38876). Volta pro texto do
+    PIN: dia e mês sem zero à esquerda, ano com 4 dígitos, que é o padrão dos
+    PINs de 3 partes da origem. Texto (ex.: "7.1.2.5", "MANUT") passa direto.
+    """
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool) and 20000 <= valor <= 90000:
+        data = datetime(1899, 12, 30) + timedelta(days=int(valor))
+        return f"{data.day}.{data.month}.{data.year}"
+
+    return valor
 
 
 def is_date_like(valor) -> bool:
@@ -285,9 +302,12 @@ def preparar_dados_origem(ss_orig: gspread.Spreadsheet) -> dict:
             for k in range(7):
                 row[30 + k] = r_bq[26 + k]
 
-            # AG = CQ e AJ = CT (serial: data, não texto)
+            # AG = CQ (serial: data, não texto)
             row[30] = r_bq_ser[idx_cq]
-            row[33] = r_bq_ser[idx_ct]
+
+            # AJ = CT é PIN (texto), não data. Parte dos PINs da origem virou
+            # data no Sheets; pin_de_serial devolve o texto do PIN.
+            row[33] = pin_de_serial(r_bq_ser[idx_ct])
 
             # AN:AR = BR:BV
             row[37] = r_bq[1]
@@ -376,7 +396,7 @@ def atualizar_carteira(
             aba_carteira_dest,
             [
                 f"{coluna}2:{coluna}{ultima_linha_carteira}"
-                for coluna in ("D", "AA", "AC", "AF", "AG", "AJ", "AU", "AV")
+                for coluna in ("D", "AA", "AC", "AF", "AG", "AU", "AV")
             ],
         )
 
@@ -649,6 +669,8 @@ def main() -> None:
             f"Nenhum ID encontrado na aba BD_Planilhas!C3:C "
             f"na planilha {LISTA_PLANILHAS_SPREADSHEET_ID}."
         )
+
+    planilhas = filtrar_planilhas(planilhas)
 
     print(f"Total de planilhas encontradas: {len(planilhas)}")
 

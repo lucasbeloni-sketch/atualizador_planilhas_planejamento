@@ -572,6 +572,30 @@ def buscar_planilhas(ss_lista: gspread.Spreadsheet) -> list[dict[str, str]]:
     return planilhas
 
 
+def filtrar_planilhas(planilhas: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Filtro opcional por nome (BD_Planilhas!B), via env PLANILHAS_FILTRO separada
+    por vírgula, pra teste manual numa unidade só. Vazio = todas, que é o que a
+    pipeline agendada usa.
+    """
+    filtro = {
+        nome.strip().upper()
+        for nome in os.getenv("PLANILHAS_FILTRO", "").split(",")
+        if nome.strip()
+    }
+
+    if not filtro:
+        return planilhas
+
+    selecionadas = [p for p in planilhas if p["nome"].strip().upper() in filtro]
+
+    if not selecionadas:
+        raise RuntimeError(f"Nenhuma planilha de BD_Planilhas bate com o filtro {sorted(filtro)}.")
+
+    print(f"Filtro PLANILHAS_FILTRO ativo: {sorted(filtro)}")
+    return selecionadas
+
+
 def agora_formatado() -> str:
     """Data/hora atual no fuso configurado, formato dd/MM/yyyy HH:mm:ss."""
     return datetime.now(TIMEZONE).strftime("%d/%m/%Y %H:%M:%S")
