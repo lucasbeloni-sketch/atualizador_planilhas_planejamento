@@ -460,9 +460,13 @@ def congelar_intervalo(
     )
 
 
-def formatar_data(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
+def formatar_data(
+    worksheet: gspread.Worksheet,
+    ranges: list[str],
+    pattern: str = "dd/MM/yyyy",
+) -> None:
     """
-    Aplica formato de data dd/MM/yyyy nos ranges informados.
+    Aplica formato de data (dd/MM/yyyy por padrão) nos ranges informados.
 
     Necessário porque as colunas de data são gravadas como serial (número): numa
     célula em "Automático" o serial apareceria como 45627 em vez de 01/12/2024.
@@ -482,7 +486,7 @@ def formatar_data(worksheet: gspread.Worksheet, ranges: list[str]) -> None:
             "format": {
                 "numberFormat": {
                     "type": "DATE",
-                    "pattern": "dd/MM/yyyy",
+                    "pattern": pattern,
                 }
             },
         }

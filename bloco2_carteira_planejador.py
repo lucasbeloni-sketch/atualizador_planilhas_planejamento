@@ -37,7 +37,12 @@ RENDER_SERIAL = "SERIAL_NUMBER"
 # Cuidado: as listas de formato do Bloco 3 (moeda AL/AM/AO/AQ/BQ, percentual
 # AN/AP/AR) são do Plan_Principal. Mesmas letras, outra aba, outro significado,
 # e não servem pra classificar as colunas daqui.
-COLUNAS_DATA = ["G", "AS", "AT", "AX", "AY"]
+COLUNAS_DATA = ["AS", "AT", "AX", "AY"]
+
+# G (Carteiras) é mês de referência, não data cheia: exibe "jul./26", não
+# "01/07/2026". Mesmo padrão da linha-modelo G1 de todas as planilhas.
+COLUNAS_MES = ["G"]
+PADRAO_MES = 'mmm"/"yy" "'
 
 
 # =========================================================
@@ -254,6 +259,11 @@ def executar_bloco2_carteira_planejador(ss_dest: gspread.Spreadsheet) -> None:
     formatar_data(
         worksheet,
         [f"{coluna}6:{coluna}{last_row}" for coluna in COLUNAS_DATA],
+    )
+    formatar_data(
+        worksheet,
+        [f"{coluna}6:{coluna}{last_row}" for coluna in COLUNAS_MES],
+        pattern=PADRAO_MES,
     )
 
     finalizar_execucao(worksheet)
