@@ -1,0 +1,41 @@
+name: TMP - Verificar BRUMADO E/F (read-only)
+
+# Workflow TEMPORARIO, so le. Remover depois da validacao.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -q -r requirements.txt
+      - env:
+          GOOGLE_CREDENTIALS_B64: ${{ secrets.GOOGLE_CREDENTIALS_B64 }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python -u - <<'PYEOF'
+          from collections import Counter
+          from common import executar_com_retry, get_gspread_client
+          ss = executar_com_retry(lambda: get_gspread_client().open_by_key("1oS619l3x_D1mXkvDpw8vs91G6ipZmsK83JqEIwPj7Uk"))
+          meta = ss.fetch_sheet_metadata(params={
+              "ranges": ["'Carteira_Planejador'!E6:F176"],
+              "includeGridData": "true",
+              "fields": "sheets.data(rowData.values(userEnteredFormat.numberFormat,effectiveValue,formattedValue))",
+          })
+          rows = meta["sheets"][0]["data"][0].get("rowData", [])
+          for c, nome in ((0, "E"), (1, "F")):
+              fmts = Counter(); exib = Counter()
+              for r in rows:
+                  vals = r.get("values", [])
+                  v = vals[c] if c < len(vals) else {}
+                  fmts[str(v.get("userEnteredFormat", {}).get("numberFormat"))] += 1
+                  if "numberValue" in v.get("effectiveValue", {}):
+                      exib[v.get("formattedValue")] += 1
+              print(nome, "formatos:", dict(fmts), "| numeros exibidos:", dict(exib.most_common(6)))
+          PYEOF
